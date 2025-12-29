@@ -1,0 +1,1580 @@
+# Règles CI/CD et Pipelines
+
+**Scope**: `**/.github/**`, `**/.gitlab-ci.yml`, `**/Jenkinsfile`, `**/ci/**`, `**/cd/**`, `**/pipelines/**`
+
+## Persona
+
+Tu es un expert DevOps et Kubernetes, spécialisé en GitOps avec ArgoCD, gestion de clusters, et déploiements continus.
+
+## Contexte Technique
+
+- GitOps avec ArgoCD
+- Pipelines CI/CD : GitHub Actions, GitLab CI, Jenkins, etc.
+- Docker pour la construction des images
+- Registries d'images Docker (privés ou publics)
+- Kubernetes et ArgoCD pour les déploiements
+
+## Contraintes Strictes - CI/CD
+
+- ✅ Intégrer ArgoCD avec les pipelines CI/CD.
+- ✅ Utiliser des images versionnées (tags, SHA) pour la traçabilité.
+- ✅ Automatiser les déploiements en dev/test via CI/CD.
+- ✅ Requérir une approbation manuelle pour la production.
+- ✅ Utiliser des `ImagePullSecrets` pour les registries privés.
+- ✅ Valider les manifests Kubernetes avant le déploiement.
+- ✅ Scanner les images Docker pour les vulnérabilités.
+
+## Workflow GitOps Recommandé
+
+**Workflow standard** :
+
+1. Push de code → CI/CD build l'image Docker
+2. CI/CD tag l'image avec le SHA du commit
+3. CI/CD met à jour les manifests Kubernetes avec la nouvelle image
+4. CI/CD commit les manifests dans le dépôt Git
+5. ArgoCD détecte le changement et synchronise (selon la politique de sync)
+
+**Avantages du GitOps** :
+
+- Traçabilité complète des déploiements
+- Rollback facile via Git
+- Audit trail automatique
+- Séparation des responsabilités (CI build, CD déploie)
+
+## Construction des Images Docker
+
+- ✅ Utiliser des tags versionnés (SHA du commit, version sémantique).
+- ✅ Scanner les images pour les vulnérabilités avant le push.
+- ✅ Utiliser des images de base minimales et maintenues.
+- ✅ Utiliser des builds multi-stage pour réduire la taille.
+- ✅ Épingler les versions des images de base.
+
+**Exemple Dockerfile multi-stage** :
+
+```dockerfile
+# Stage 1: Build
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+# Stage 2: Runtime
+FROM node:18-alpine
+WORKDIR /app
+RUN addgroup -g 1000 -S nodejs && \
+    adduser -S nodejs -u 1000
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
+USER nodejs
+EXPOSE 8080
+CMD ["node", "dist/index.js"]
+```
+
+**Bonnes pratiques Docker** :
+
+- Utiliser `.dockerignore` pour exclure les fichiers inutiles
+- Minimiser le nombre de layers
+- Utiliser des images distroless quand c'est possible
+- Configurer des health checks dans le Dockerfile
+- Utiliser des labels pour la traçabilité
+
+## Mise à Jour des Manifests Kubernetes
+
+- ✅ Mettre à jour automatiquement les manifests avec la nouvelle image.
+- ✅ Utiliser des outils comme `kustomize edit set image` ou `helm upgrade`.
+- ✅ Commiter les changements dans le dépôt Git.
+- ✅ Utiliser des messages de commit descriptifs.
+
+**Exemple script de mise à jour avec Kustomize** :
+
+```bash
+#!/bin/bash
+IMAGE_TAG=$1
+cd k8s/overlays/production
+kustomize edit set image my-app=my-registry.example.com/my-app:${IMAGE_TAG}
+git add kustomization.yaml
+git commit -m "chore: update my-app to ${IMAGE_TAG}"
+git push
+```
+
+**Exemple script de mise à jour avec Helm** :
+
+```bash
+#!/bin/bash
+IMAGE_TAG=$1
+helm upgrade my-app ./charts/my-app \
+  --set image.tag=${IMAGE_TAG} \
+  --namespace production \
+  --dry-run > /tmp/manifests.yaml
+# Valider et commiter les manifests
+```
+
+## Pipelines CI/CD par Environnement
+
+### Pipeline Dev/Test
+
+- ✅ Déploiement automatique après validation des tests.
+- ✅ Build et push de l'image Docker.
+- ✅ Mise à jour automatique des manifests.
+- ✅ Sync automatique ArgoCD.
+
+**Exemple GitHub Actions pour Dev** :
+
+```yaml
+name: Deploy to Dev
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t my-registry/my-app:${{ github.sha }} .
+          docker push my-registry/my-app:${{ github.sha }}
+
+      - name: Update manifests
+        run: |
+          cd k8s/overlays/dev
+          kustomize edit set image my-app=my-registry/my-app:${{ github.sha }}
+
+      - name: Commit and push
+        run: |
+          git config user.name "CI/CD"
+          git config user.email "ci@example.com"
+          git add k8s/overlays/dev/kustomization.yaml
+          git commit -m "chore: deploy ${{ github.sha }} to dev"
+          git push
+```
+
+### Pipeline Production
+
+- ✅ Requérir une approbation manuelle avant le déploiement.
+- ✅ Build et push de l'image Docker avec tag de version.
+- ✅ Mise à jour manuelle des manifests (ou via PR).
+- ✅ Sync manuel ArgoCD uniquement.
+
+**Exemple GitHub Actions pour Production** :
+
+```yaml
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy'
+        required: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t my-registry/my-app:${{ inputs.version }} .
+          docker push my-registry/my-app:${{ inputs.version }}
+
+      - name: Create PR for manifests update
+        uses: peter-evans/create-pull-request@v5
+        with:
+          title: 'chore: deploy ${{ inputs.version }} to production'
+          body: 'Deploy version ${{ inputs.version }} to production'
+          branch: deploy-production-${{ inputs.version }}
+          commit-message: 'chore: update manifests for ${{ inputs.version }}'
+```
+
+## Validation et Tests dans les Pipelines
+
+- ✅ Exécuter les tests unitaires avant le build.
+- ✅ Valider les manifests Kubernetes avec `kubeval` et `kube-score`.
+- ✅ Scanner les images Docker pour les vulnérabilités.
+- ✅ Tester les déploiements dans un environnement de test.
+
+**Exemple étape de validation** :
+
+```yaml
+- name: Validate manifests
+  run: |
+    kubeval k8s/**/*.yaml
+    kube-score score k8s/**/*.yaml
+
+- name: Scan Docker image
+  run: |
+    trivy image my-registry/my-app:${{ github.sha }}
+
+- name: Test deployment
+  run: |
+    kubectl apply --dry-run=client -f k8s/overlays/test/
+```
+
+## Sécurité dans les Pipelines CI/CD
+
+- ✅ Utiliser des secrets pour les credentials (tokens, mots de passe).
+- ✅ Ne jamais exposer de secrets dans les logs.
+- ✅ Utiliser des ServiceAccounts avec permissions minimales.
+- ✅ Scanner les dépendances pour les vulnérabilités.
+
+**Bonnes pratiques Sécurité** :
+
+- Utiliser des secrets managés par la plateforme CI/CD
+- Roter régulièrement les tokens et credentials
+- Limiter les permissions des ServiceAccounts
+- Auditer les accès aux pipelines
+- Utiliser des images de base sécurisées
+
+## Intégration avec ArgoCD
+
+- ✅ Configurer ArgoCD pour surveiller le dépôt Git.
+- ✅ Utiliser des annotations pour contrôler le comportement.
+- ✅ Configurer des notifications pour les événements de déploiement.
+
+**Configuration ArgoCD Application** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-dev
+  namespace: argocd
+  annotations:
+    notifications.argoproj.io/subscribe.on-sync-succeeded.slack: my-channel
+spec:
+  source:
+    repoURL: https://github.com/org/repo.git
+    targetRevision: develop
+    path: k8s/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+
+## Rollback dans les Pipelines
+
+- ✅ Documenter les procédures de rollback.
+- ✅ Faciliter le rollback via Git (revert du commit).
+- ✅ Utiliser ArgoCD pour le rollback si nécessaire.
+
+**Procédure de Rollback** :
+
+1. Identifier le commit précédent stable
+2. Revert le commit des manifests : `git revert <commit-sha>`
+3. Push le revert : `git push`
+4. ArgoCD synchronise automatiquement (ou manuellement en production)
+
+## Monitoring des Pipelines
+
+- ✅ Surveiller les durées d'exécution des pipelines.
+- ✅ Configurer des alertes pour les échecs de pipeline.
+- ✅ Documenter les métriques de déploiement (fréquence, taux de succès).
+
+**Métriques importantes** :
+
+- Durée moyenne des builds
+- Taux de succès des déploiements
+- Temps de déploiement (build → production)
+- Nombre de déploiements par jour/semaine
+
+## GitLab CI
+
+- ✅ Utiliser GitLab CI pour les pipelines CI/CD.
+- ✅ Configurer des pipelines avec `.gitlab-ci.yml`.
+- ✅ Utiliser des runners GitLab appropriés.
+
+**Exemple GitLab CI pour Dev** :
+
+```yaml
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  IMAGE_TAG: $CI_COMMIT_SHA
+  REGISTRY: registry.example.com
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $REGISTRY
+  script:
+    - docker build -t $REGISTRY/my-app:$IMAGE_TAG .
+    - docker push $REGISTRY/my-app:$IMAGE_TAG
+  only:
+    - develop
+
+deploy-dev:
+  stage: deploy
+  image: alpine/k8s:latest
+  script:
+    - cd k8s/overlays/dev
+    - kustomize edit set image my-app=$REGISTRY/my-app:$IMAGE_TAG
+    - git config user.name "GitLab CI"
+    - git config user.email "gitlab-ci@example.com"
+    - git add kustomization.yaml
+    - git commit -m "chore: deploy $IMAGE_TAG to dev"
+    - git push https://oauth2:$GITLAB_TOKEN@gitlab.com/org/repo.git HEAD:develop
+  only:
+    - develop
+```
+
+**Exemple GitLab CI pour Production** :
+
+```yaml
+deploy-production:
+  stage: deploy
+  image: alpine/k8s:latest
+  script:
+    - cd k8s/overlays/production
+    - kustomize edit set image my-app=$REGISTRY/my-app:$CI_COMMIT_TAG
+    - git config user.name "GitLab CI"
+    - git config user.email "gitlab-ci@example.com"
+    - git add kustomization.yaml
+    - git commit -m "chore: deploy $CI_COMMIT_TAG to production"
+    - git push https://oauth2:$GITLAB_TOKEN@gitlab.com/org/repo.git HEAD:main
+  when: manual
+  only:
+    - tags
+```
+
+## Jenkins
+
+- ✅ Utiliser Jenkins pour les pipelines CI/CD.
+- ✅ Configurer des pipelines avec Jenkinsfile (declarative ou scripted).
+- ✅ Utiliser des agents Jenkins appropriés.
+
+**Exemple Jenkinsfile Declarative** :
+
+```groovy
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_TAG = "${env.GIT_COMMIT.take(7)}"
+        REGISTRY = 'registry.example.com'
+    }
+
+    stages {
+        stage('Build') {
+            steps {
+                sh 'docker build -t ${REGISTRY}/my-app:${IMAGE_TAG} .'
+                sh 'docker push ${REGISTRY}/my-app:${IMAGE_TAG}'
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh 'npm test'
+            }
+        }
+
+        stage('Update Manifests') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                sh '''
+                    cd k8s/overlays/dev
+                    kustomize edit set image my-app=${REGISTRY}/my-app:${IMAGE_TAG}
+                    git config user.name "Jenkins"
+                    git config user.email "jenkins@example.com"
+                    git add kustomization.yaml
+                    git commit -m "chore: deploy ${IMAGE_TAG} to dev"
+                    git push
+                '''
+            }
+        }
+
+        stage('Deploy Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                input message: 'Deploy to production?', ok: 'Deploy'
+                sh '''
+                    cd k8s/overlays/production
+                    kustomize edit set image my-app=${REGISTRY}/my-app:${IMAGE_TAG}
+                    git config user.name "Jenkins"
+                    git config user.email "jenkins@example.com"
+                    git add kustomization.yaml
+                    git commit -m "chore: deploy ${IMAGE_TAG} to production"
+                    git push
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        failure {
+            emailext subject: "Pipeline Failed: ${env.JOB_NAME}",
+                     body: "Build ${env.BUILD_NUMBER} failed.",
+                     to: "${env.CHANGE_AUTHOR_EMAIL}"
+        }
+    }
+}
+```
+
+## Tests d'Intégration et End-to-End
+
+- ✅ Exécuter des tests d'intégration dans les pipelines.
+- ✅ Configurer des tests end-to-end pour valider les déploiements.
+- ✅ Utiliser des environnements de test isolés.
+
+**Exemple étape de tests d'intégration** :
+
+```yaml
+- name: Run integration tests
+  run: |
+    npm run test:integration
+  env:
+    DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+    API_URL: http://test-api.example.com
+
+- name: Run E2E tests
+  run: |
+    npm run test:e2e
+  env:
+    BASE_URL: https://test.example.com
+```
+
+**Tests dans Kubernetes** :
+
+```yaml
+- name: Deploy to test environment
+  run: |
+    kubectl apply -f k8s/overlays/test/
+    kubectl wait --for=condition=ready pod -l app=my-app -n test --timeout=300s
+
+- name: Run E2E tests against test environment
+  run: |
+    npm run test:e2e -- --base-url=http://my-app.test.svc.cluster.local
+
+- name: Cleanup test environment
+  if: always()
+  run: |
+    kubectl delete -f k8s/overlays/test/
+```
+
+**Bonnes pratiques Tests** :
+
+- Exécuter les tests dans un environnement isolé
+- Nettoyer les environnements de test après les tests
+- Utiliser des données de test appropriées
+- Configurer des timeouts pour les tests
+- Documenter les tests et leurs dépendances
+
+## Build Caching et Optimization
+
+- ✅ Utiliser le cache Docker pour accélérer les builds.
+- ✅ Optimiser les layers Docker pour réduire la taille.
+- ✅ Utiliser BuildKit pour des builds plus rapides.
+
+**Exemple Dockerfile avec cache optimisé** :
+
+```dockerfile
+# Stage 1: Dependencies (cached layer)
+FROM node:18-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Stage 2: Build (cached layer)
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+# Stage 3: Runtime
+FROM node:18-alpine
+WORKDIR /app
+RUN addgroup -g 1000 -S nodejs && \
+    adduser -S nodejs -u 1000
+COPY --from=deps --chown=nodejs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
+USER nodejs
+EXPOSE 8080
+CMD ["node", "dist/index.js"]
+```
+
+**Utilisation de BuildKit** :
+
+```yaml
+- name: Build with BuildKit
+  run: |
+    DOCKER_BUILDKIT=1 docker build \
+      --cache-from my-registry/my-app:latest \
+      --tag my-registry/my-app:${{ github.sha }} \
+      .
+```
+
+**Bonnes pratiques Build Caching** :
+
+- Utiliser des layers de cache appropriés
+- Utiliser BuildKit pour des builds plus rapides
+- Configurer des cache mounts pour les dépendances
+- Surveiller la taille des images
+- Optimiser l'ordre des instructions Dockerfile
+
+## Multi-Architecture Builds
+
+- ✅ Construire des images pour plusieurs architectures (amd64, arm64).
+- ✅ Utiliser buildx pour les builds multi-arch.
+- ✅ Tester les images sur différentes architectures.
+
+**Exemple build multi-arch** :
+
+```yaml
+- name: Set up Docker Buildx
+  uses: docker/setup-buildx-action@v2
+
+- name: Build multi-arch image
+  run: |
+    docker buildx build \
+      --platform linux/amd64,linux/arm64 \
+      --tag my-registry/my-app:${{ github.sha }} \
+      --tag my-registry/my-app:latest \
+      --push \
+      .
+```
+
+**Bonnes pratiques Multi-Arch** :
+
+- Construire pour les architectures cibles
+- Tester les images sur différentes architectures
+- Utiliser des manifestes multi-arch
+- Documenter les architectures supportées
+
+## Image Signing et SBOM
+
+- ✅ Signer les images Docker pour la sécurité.
+- ✅ Générer des SBOM (Software Bill of Materials).
+- ✅ Vérifier les signatures avant le déploiement.
+
+**Exemple signature d'image avec Cosign** :
+
+```yaml
+- name: Sign Docker image
+  run: |
+    cosign sign --key env://COSIGN_PRIVATE_KEY \
+      my-registry/my-app:${{ github.sha }}
+
+- name: Generate SBOM
+  run: |
+    syft docker:my-registry/my-app:${{ github.sha }} \
+      --output spdx-json \
+      --file sbom.json
+
+- name: Attach SBOM to image
+  run: |
+    cosign attach sbom \
+      --sbom sbom.json \
+      my-registry/my-app:${{ github.sha }}
+```
+
+**Bonnes pratiques Image Signing** :
+
+- Signer toutes les images de production
+- Générer des SBOM pour la traçabilité
+- Vérifier les signatures avant déploiement
+- Stocker les clés de signature de manière sécurisée
+- Documenter les procédures de signature
+
+## Pipeline Templates et Réutilisabilité
+
+- ✅ Créer des templates de pipeline réutilisables.
+- ✅ Utiliser des includes pour partager la logique.
+- ✅ Documenter les templates disponibles.
+
+**Exemple template GitHub Actions** :
+
+```yaml
+# .github/workflows/templates/build-template.yml
+name: Build Template
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build Docker image
+        run: |
+          docker build -t my-registry/my-app:${{ github.sha }} .
+          docker push my-registry/my-app:${{ github.sha }}
+```
+
+**Utilisation du template** :
+
+```yaml
+name: Deploy to Dev
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  build:
+    uses: ./.github/workflows/templates/build-template.yml
+    with:
+      environment: dev
+```
+
+**Bonnes pratiques Templates** :
+
+- Créer des templates réutilisables
+- Documenter les paramètres des templates
+- Versionner les templates
+- Tester les templates avant utilisation
+
+## Conditional Deployments et Feature Flags
+
+- ✅ Utiliser des déploiements conditionnels selon les branches.
+- ✅ Intégrer les feature flags dans les pipelines.
+- ✅ Configurer des déploiements progressifs.
+
+**Exemple déploiement conditionnel** :
+
+```yaml
+- name: Deploy based on branch
+  run: |
+    if [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+      ENV="dev"
+    elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+      ENV="production"
+    fi
+    cd k8s/overlays/$ENV
+    kustomize edit set image my-app=my-registry/my-app:${{ github.sha }}
+```
+
+**Intégration Feature Flags** :
+
+```yaml
+- name: Update feature flags
+  run: |
+    # Mettre à jour les feature flags selon l'environnement
+    kubectl set env deployment/my-app \
+      FEATURE_NEW_API=${{ env.FEATURE_NEW_API }} \
+      -n ${{ env.NAMESPACE }}
+```
+
+**Bonnes pratiques Conditional Deployments** :
+
+- Utiliser des conditions claires et documentées
+- Tester les conditions dans différents scénarios
+- Documenter les règles de déploiement
+- Surveiller les déploiements conditionnels
+
+## Canary et Blue-Green Deployments via CI/CD
+
+- ✅ Configurer des déploiements progressifs via CI/CD.
+- ✅ Intégrer Argo Rollouts dans les pipelines.
+- ✅ Automatiser les validations de déploiement.
+
+**Exemple Canary Deployment** :
+
+```yaml
+- name: Deploy Canary
+  run: |
+    # Mettre à jour le Rollout pour déployer en canary
+    kubectl patch rollout my-app -n production -p '{
+      "spec": {
+        "template": {
+          "spec": {
+            "containers": [{
+              "name": "app",
+              "image": "my-registry/my-app:${{ github.sha }}"
+            }]
+          }
+        }
+      }
+    }'
+
+- name: Wait for canary analysis
+  run: |
+    kubectl wait rollout/my-app --for=condition=Healthy --timeout=600s -n production
+```
+
+**Bonnes pratiques Canary/Blue-Green** :
+
+- Configurer des métriques de validation
+- Automatiser les promotions
+- Documenter les critères de promotion
+- Surveiller les déploiements progressifs
+
+## Pipeline Artifacts et Caching
+
+- ✅ Gérer les artifacts générés par les pipelines.
+- ✅ Utiliser le cache pour accélérer les builds.
+- ✅ Stocker les artifacts de manière sécurisée.
+
+**Exemple gestion d'artifacts** :
+
+```yaml
+- name: Upload build artifacts
+  uses: actions/upload-artifact@v3
+  with:
+    name: build-artifacts
+    path: dist/
+
+- name: Download artifacts
+  uses: actions/download-artifact@v3
+  with:
+    name: build-artifacts
+```
+
+**Cache des dépendances** :
+
+```yaml
+- name: Cache node modules
+  uses: actions/cache@v3
+  with:
+    path: node_modules
+    key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+    restore-keys: |
+      ${{ runner.os }}-node-
+```
+
+**Bonnes pratiques Artifacts** :
+
+- Stocker uniquement les artifacts nécessaires
+- Configurer des rétentions appropriées
+- Utiliser le cache pour les dépendances
+- Documenter les artifacts générés
+
+## Pipeline Parallelization
+
+- ✅ Paralléliser les étapes des pipelines pour accélérer l'exécution.
+- ✅ Utiliser des matrices pour les builds multiples.
+- ✅ Optimiser l'ordre d'exécution des jobs.
+
+**Exemple parallélisation** :
+
+```yaml
+jobs:
+  test:
+    strategy:
+      matrix:
+        node-version: [16, 18, 20]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build Docker image
+        run: docker build -t my-registry/my-app:${{ github.sha }} .
+```
+
+**Bonnes pratiques Parallelization** :
+
+- Paralléliser les tests indépendants
+- Utiliser des matrices pour les builds multiples
+- Optimiser l'ordre d'exécution
+- Surveiller les durées d'exécution
+
+## Dependency Management
+
+- ✅ Gérer les dépendances dans les pipelines.
+- ✅ Scanner les dépendances pour les vulnérabilités.
+- ✅ Mettre à jour les dépendances régulièrement.
+
+**Exemple scan de dépendances** :
+
+```yaml
+- name: Scan dependencies
+  run: |
+    npm audit --audit-level=moderate
+    # ou
+    snyk test --severity-threshold=high
+```
+
+**Mise à jour des dépendances** :
+
+```yaml
+- name: Update dependencies
+  run: |
+    npm update
+    npm audit fix
+    git add package*.json
+    git commit -m "chore: update dependencies"
+```
+
+**Bonnes pratiques Dependency Management** :
+
+- Scanner les dépendances régulièrement
+- Mettre à jour les dépendances de manière contrôlée
+- Documenter les dépendances critiques
+- Surveiller les vulnérabilités
+
+## Pipeline Notifications
+
+- ✅ Configurer des notifications pour les événements de pipeline.
+- ✅ Notifier les équipes en cas d'échec.
+- ✅ Intégrer avec Slack, Email, etc.
+
+**Exemple notifications GitHub Actions** :
+
+```yaml
+- name: Notify on failure
+  if: failure()
+  uses: 8398a7/action-slack@v3
+  with:
+    status: ${{ job.status }}
+    text: 'Pipeline failed for commit ${{ github.sha }}'
+    webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+```
+
+**Bonnes pratiques Notifications** :
+
+- Configurer des notifications pour les échecs critiques
+- Ne pas spammer avec trop de notifications
+- Utiliser des canaux dédiés par environnement
+- Documenter les canaux de notification
+
+## Pipeline Debugging et Troubleshooting
+
+- ✅ Activer le debug mode pour diagnostiquer les problèmes.
+- ✅ Logger les informations pertinentes.
+- ✅ Documenter les problèmes courants.
+
+**Activation du debug** :
+
+```yaml
+- name: Debug information
+  run: |
+    echo "Commit: ${{ github.sha }}"
+    echo "Branch: ${{ github.ref }}"
+    echo "Actor: ${{ github.actor }}"
+    env | sort
+```
+
+**Bonnes pratiques Debugging** :
+
+- Activer le debug mode quand nécessaire
+- Logger les informations pertinentes
+- Documenter les problèmes courants
+- Utiliser des outils de debugging appropriés
+
+## Pipeline Retry et Timeouts
+
+- ✅ Configurer des retries pour les étapes critiques.
+- ✅ Définir des timeouts appropriés.
+- ✅ Gérer les échecs de manière gracieuse.
+
+**Exemple retry et timeout** :
+
+```yaml
+- name: Deploy with retry
+  uses: nick-invision/retry@v2
+  with:
+    timeout_minutes: 10
+    max_attempts: 3
+    command: kubectl apply -f k8s/overlays/production
+```
+
+**Bonnes pratiques Retry/Timeout** :
+
+- Configurer des retries pour les opérations réseau
+- Définir des timeouts réalistes
+- Gérer les échecs de manière gracieuse
+- Documenter les stratégies de retry
+
+## Tekton Pipelines
+
+- ✅ Utiliser Tekton pour des pipelines Kubernetes-native.
+- ✅ Définir des Tasks et Pipelines réutilisables.
+- ✅ Intégrer Tekton avec ArgoCD.
+
+**Exemple Task Tekton** :
+
+```yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: build-docker-image
+spec:
+  params:
+    - name: IMAGE_URL
+      description: Image URL
+    - name: IMAGE_TAG
+      description: Image tag
+  steps:
+    - name: build-and-push
+      image: gcr.io/kaniko-project/executor:latest
+      args:
+        - --dockerfile=Dockerfile
+        - --context=.
+        - --destination=${params.IMAGE_URL}:${params.IMAGE_TAG}
+```
+
+**Exemple Pipeline Tekton** :
+
+```yaml
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: build-and-deploy
+spec:
+  params:
+    - name: IMAGE_URL
+    - name: IMAGE_TAG
+  tasks:
+    - name: build
+      taskRef:
+        name: build-docker-image
+      params:
+        - name: IMAGE_URL
+          value: $(params.IMAGE_URL)
+        - name: IMAGE_TAG
+          value: $(params.IMAGE_TAG)
+    - name: update-manifests
+      runAfter:
+        - build
+      taskRef:
+        name: update-k8s-manifests
+```
+
+**Avantages Tekton** :
+
+- Pipelines Kubernetes-native
+- Tasks réutilisables
+- Intégration native avec Kubernetes
+- Scalabilité et flexibilité
+
+## Argo Workflows
+
+- ✅ Utiliser Argo Workflows pour des workflows complexes.
+- ✅ Définir des workflows déclaratifs.
+- ✅ Intégrer avec ArgoCD.
+
+**Exemple Argo Workflow** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: build-and-deploy-
+spec:
+  entrypoint: build-deploy
+  templates:
+    - name: build-deploy
+      steps:
+        - - name: build
+            template: build-image
+        - - name: deploy
+            template: update-manifests
+    - name: build-image
+      container:
+        image: docker:latest
+        command: [sh, -c]
+        args:
+          ['docker build -t my-registry/my-app:${{workflow.parameters.tag}} .']
+```
+
+**Bonnes pratiques Argo Workflows** :
+
+- Utiliser pour des workflows complexes
+- Définir des templates réutilisables
+- Intégrer avec ArgoCD
+- Surveiller les workflows
+
+## Semantic Versioning
+
+- ✅ Utiliser le versioning sémantique pour les releases.
+- ✅ Automatiser la génération de versions.
+- ✅ Taguer les releases dans Git.
+
+**Format Semantic Versioning** :
+
+- `MAJOR.MINOR.PATCH` (ex: `1.2.3`)
+- `MAJOR` : Changements incompatibles
+- `MINOR` : Nouvelles fonctionnalités compatibles
+- `PATCH` : Corrections de bugs compatibles
+
+**Exemple génération de version** :
+
+```yaml
+- name: Generate version
+  id: version
+  run: |
+    if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+      VERSION=$(git describe --tags --abbrev=0 | sed 's/v//')
+      NEW_VERSION=$(echo $VERSION | awk -F. '{print $1"."$2"."$3+1}')
+      echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+    fi
+
+- name: Create Git tag
+  run: |
+    git tag v${{ steps.version.outputs.version }}
+    git push origin v${{ steps.version.outputs.version }}
+```
+
+**Bonnes pratiques Semantic Versioning** :
+
+- Suivre le format MAJOR.MINOR.PATCH
+- Automatiser la génération de versions
+- Taguer toutes les releases
+- Documenter les changements majeurs
+
+## Release Management
+
+- ✅ Gérer les releases de manière structurée.
+- ✅ Créer des release notes automatiques.
+- ✅ Gérer les changelogs.
+
+**Exemple génération de release notes** :
+
+```yaml
+- name: Generate release notes
+  uses: actions/create-release@v1
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  with:
+    tag_name: v${{ steps.version.outputs.version }}
+    release_name: Release v${{ steps.version.outputs.version }}
+    body: |
+      ## Changes
+      - Feature: New API endpoint
+      - Fix: Resolved memory leak
+      - Chore: Updated dependencies
+    draft: false
+    prerelease: false
+```
+
+**Bonnes pratiques Release Management** :
+
+- Créer des release notes descriptives
+- Gérer les changelogs
+- Taguer toutes les releases
+- Documenter les breaking changes
+
+## Changelog Generation
+
+- ✅ Générer automatiquement les changelogs.
+- ✅ Utiliser des conventions de commit pour le changelog.
+- ✅ Maintenir un historique des changes.
+
+**Exemple génération de changelog** :
+
+```yaml
+- name: Generate changelog
+  uses: metcalfc/changelog-generator@v4
+  with:
+    myToken: ${{ secrets.GITHUB_TOKEN }}
+    owner: org
+    repo: repo
+    sinceTag: v1.0.0
+    futureRelease: v${{ steps.version.outputs.version }}
+```
+
+**Bonnes pratiques Changelog** :
+
+- Générer automatiquement depuis les commits
+- Utiliser des conventions de commit
+- Maintenir un format cohérent
+- Inclure les breaking changes
+
+## Pre-commit Hooks
+
+- ✅ Configurer des hooks pre-commit pour la validation.
+- ✅ Valider le code avant le commit.
+- ✅ Utiliser des outils comme pre-commit framework.
+
+**Exemple configuration pre-commit** :
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+  - repo: https://github.com/instrumenta/kubeval
+    rev: v0.16.1
+    hooks:
+      - id: kubeval
+        args: ['--strict']
+```
+
+**Bonnes pratiques Pre-commit** :
+
+- Valider le code avant le commit
+- Utiliser des hooks rapides
+- Documenter les hooks configurés
+- Intégrer avec les outils de validation
+
+## Branch Protection
+
+- ✅ Configurer des règles de protection des branches.
+- ✅ Requérir des reviews avant merge.
+- ✅ Bloquer les merges directs en production.
+
+**Règles de protection recommandées** :
+
+- Requérir des pull requests pour merge
+- Requérir des reviews approuvées
+- Requérir que les pipelines CI passent
+- Bloquer les merges directs en main/production
+- Requérir des statuts de vérification
+
+**Bonnes pratiques Branch Protection** :
+
+- Protéger les branches critiques (main, production)
+- Requérir des reviews pour les changements
+- Bloquer les merges si les pipelines échouent
+- Documenter les règles de protection
+
+## PR Templates
+
+- ✅ Créer des templates de pull requests.
+- ✅ Standardiser les informations requises.
+- ✅ Faciliter les reviews.
+
+**Exemple PR Template** :
+
+```markdown
+## Description
+
+<!-- Décrire les changements apportés -->
+
+## Type de changement
+
+- [ ] Bug fix
+- [ ] Nouvelle fonctionnalité
+- [ ] Breaking change
+- [ ] Documentation
+
+## Checklist
+
+- [ ] Les tests passent localement
+- [ ] La documentation a été mise à jour
+- [ ] Les manifests Kubernetes ont été validés
+- [ ] Les images Docker ont été scannées
+```
+
+**Bonnes pratiques PR Templates** :
+
+- Standardiser les informations requises
+- Faciliter les reviews
+- Documenter les changements
+- Inclure des checklists
+
+## Commit Message Conventions
+
+- ✅ Utiliser des conventions de commit (Conventional Commits).
+- ✅ Faciliter la génération automatique de changelogs.
+- ✅ Améliorer la traçabilité.
+
+**Format Conventional Commits** :
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+**Types de commit** :
+
+- `feat`: Nouvelle fonctionnalité
+- `fix`: Correction de bug
+- `docs`: Documentation
+- `style`: Formatage
+- `refactor`: Refactoring
+- `test`: Tests
+- `chore`: Maintenance
+
+**Exemple commits** :
+
+```
+feat(api): add new user endpoint
+
+Add POST /api/users endpoint for user creation
+
+Closes #123
+```
+
+**Bonnes pratiques Commit Messages** :
+
+- Utiliser des messages descriptifs
+- Suivre les conventions de commit
+- Inclure des références aux issues
+- Séparer le sujet du corps
+
+## Dependabot et Renovate
+
+- ✅ Automatiser la mise à jour des dépendances.
+- ✅ Scanner les vulnérabilités dans les dépendances.
+- ✅ Créer des PRs automatiques pour les mises à jour.
+
+**Exemple configuration Dependabot** :
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    open-pull-requests-limit: 10
+  - package-ecosystem: 'docker'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+```
+
+**Exemple configuration Renovate** :
+
+```json
+{
+  "extends": ["config:base"],
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    }
+  ]
+}
+```
+
+**Bonnes pratiques Dependabot/Renovate** :
+
+- Automatiser les mises à jour de sécurité
+- Configurer des limites pour les PRs
+- Réviser les mises à jour majeures
+- Tester les mises à jour automatiques
+
+## Smoke Tests
+
+- ✅ Exécuter des tests de fumée après déploiement.
+- ✅ Valider rapidement que l'application fonctionne.
+- ✅ Détecter les problèmes critiques rapidement.
+
+**Exemple smoke tests** :
+
+```yaml
+- name: Run smoke tests
+  run: |
+    # Attendre que l'application soit prête
+    kubectl wait --for=condition=ready pod -l app=my-app -n production --timeout=300s
+
+    # Tests de fumée
+    curl -f http://my-app.production.svc.cluster.local/health
+    curl -f http://my-app.production.svc.cluster.local/api/version
+```
+
+**Bonnes pratiques Smoke Tests** :
+
+- Exécuter après chaque déploiement
+- Tester les endpoints critiques
+- Configurer des timeouts appropriés
+- Documenter les tests de fumée
+
+## Performance Tests
+
+- ✅ Intégrer des tests de performance dans les pipelines.
+- ✅ Surveiller les métriques de performance.
+- ✅ Bloquer les déploiements si les performances se dégradent.
+
+**Exemple tests de performance** :
+
+```yaml
+- name: Run performance tests
+  run: |
+    # Exécuter les tests de performance
+    k6 run --vus 10 --duration 30s performance-test.js
+
+    # Vérifier les métriques
+    if [ $? -ne 0 ]; then
+      echo "Performance tests failed"
+      exit 1
+    fi
+```
+
+**Bonnes pratiques Performance Tests** :
+
+- Intégrer dans les pipelines CI/CD
+- Définir des seuils de performance
+- Surveiller les métriques
+- Documenter les tests de performance
+
+## Load Tests
+
+- ✅ Exécuter des tests de charge avant la production.
+- ✅ Valider la capacité de l'application.
+- ✅ Identifier les goulots d'étranglement.
+
+**Exemple tests de charge** :
+
+```yaml
+- name: Run load tests
+  run: |
+    # Tests de charge avec k6
+    k6 run --vus 100 --duration 5m load-test.js
+
+    # Analyser les résultats
+    k6 cloud --token $K6_TOKEN load-test.js
+```
+
+**Bonnes pratiques Load Tests** :
+
+- Exécuter avant les déploiements majeurs
+- Simuler des charges réalistes
+- Surveiller les métriques pendant les tests
+- Documenter les résultats
+
+## Contract Testing
+
+- ✅ Utiliser des tests de contrat pour valider les APIs.
+- ✅ Intégrer Pact ou d'autres outils de contract testing.
+- ✅ Valider les contrats entre services.
+
+**Exemple Contract Testing avec Pact** :
+
+```yaml
+- name: Run contract tests
+  run: |
+    # Exécuter les tests de contrat
+    npm run test:contract
+
+    # Publier les contrats
+    npm run pact:publish
+```
+
+**Bonnes pratiques Contract Testing** :
+
+- Valider les contrats entre services
+- Publier les contrats dans un broker
+- Vérifier la compatibilité des contrats
+- Documenter les contrats
+
+## Infrastructure as Code dans les Pipelines
+
+- ✅ Intégrer Terraform ou Pulumi dans les pipelines.
+- ✅ Valider l'infrastructure avant déploiement.
+- ✅ Appliquer les changements d'infrastructure de manière contrôlée.
+
+**Exemple Terraform dans pipeline** :
+
+```yaml
+- name: Setup Terraform
+  uses: hashicorp/setup-terraform@v2
+  with:
+    terraform_version: 1.5.0
+
+- name: Terraform Init
+  run: terraform init
+
+- name: Terraform Plan
+  run: terraform plan -out=tfplan
+
+- name: Terraform Apply
+  if: github.ref == 'refs/heads/main'
+  run: terraform apply tfplan
+```
+
+**Bonnes pratiques Infrastructure as Code** :
+
+- Valider l'infrastructure avant application
+- Utiliser des plans Terraform pour review
+- Appliquer de manière contrôlée
+- Documenter les changements d'infrastructure
+
+## Database Migrations dans les Pipelines
+
+- ✅ Exécuter les migrations de base de données dans les pipelines.
+- ✅ Valider les migrations avant application.
+- ✅ Tester les migrations dans un environnement de test.
+
+**Exemple migration DB dans pipeline** :
+
+```yaml
+- name: Run database migrations
+  run: |
+    # Exécuter les migrations
+    kubectl run migration-job \
+      --image=my-app:migrations \
+      --restart=Never \
+      --env="DATABASE_URL=${{ secrets.DATABASE_URL }}" \
+      --command -- npm run migrate
+
+    # Attendre la complétion
+    kubectl wait --for=condition=complete job/migration-job --timeout=300s
+```
+
+**Bonnes pratiques Database Migrations** :
+
+- Tester les migrations dans un environnement de test
+- Valider les migrations avant application
+- Créer des backups avant les migrations
+- Documenter les migrations
+
+## Pipeline Metrics et Observabilité
+
+- ✅ Surveiller les métriques détaillées des pipelines.
+- ✅ Mesurer les durées d'exécution par étape.
+- ✅ Identifier les goulots d'étranglement.
+
+**Métriques à surveiller** :
+
+- Durée d'exécution par job/étape
+- Taux de succès/échec
+- Temps d'attente dans les queues
+- Utilisation des ressources
+- Coûts des pipelines
+
+**Bonnes pratiques Metrics** :
+
+- Surveiller les métriques en temps réel
+- Configurer des alertes pour les anomalies
+- Analyser les tendances
+- Optimiser selon les métriques
+
+## Cost Optimization des Pipelines
+
+- ✅ Optimiser les coûts des pipelines CI/CD.
+- ✅ Utiliser des runners auto-hébergés si nécessaire.
+- ✅ Optimiser l'utilisation des ressources.
+
+**Stratégies d'optimisation** :
+
+- Utiliser le cache pour réduire les builds
+- Paralléliser les jobs indépendants
+- Utiliser des runners auto-hébergés
+- Optimiser les durées d'exécution
+- Nettoyer les artifacts anciens
+
+**Bonnes pratiques Cost Optimization** :
+
+- Surveiller les coûts des pipelines
+- Optimiser l'utilisation des ressources
+- Utiliser le cache efficacement
+- Documenter les optimisations
+
+## Pipeline Security Avancée
+
+- ✅ Appliquer des policies de sécurité aux pipelines.
+- ✅ Utiliser OPA pour valider les pipelines.
+- ✅ Scanner les pipelines pour les vulnérabilités.
+
+**Exemple validation OPA** :
+
+```yaml
+- name: Validate pipeline with OPA
+  run: |
+    conftest test .github/workflows/*.yml \
+      --policy policies/pipeline-policy.rego
+```
+
+**Bonnes pratiques Pipeline Security** :
+
+- Valider les pipelines avec OPA
+- Scanner les pipelines pour les vulnérabilités
+- Limiter les permissions des pipelines
+- Auditer les accès aux pipelines
+
+## Git Hooks
+
+- ✅ Configurer des hooks Git pour la validation.
+- ✅ Valider avant le push.
+- ✅ Utiliser des hooks côté client et serveur.
+
+**Exemple pre-push hook** :
+
+```bash
+#!/bin/bash
+# .git/hooks/pre-push
+
+# Valider les manifests Kubernetes
+kubeval k8s/**/*.yaml
+
+# Exécuter les tests
+npm test
+
+# Bloquer le push si les tests échouent
+if [ $? -ne 0 ]; then
+  echo "Tests failed. Push blocked."
+  exit 1
+fi
+```
+
+**Bonnes pratiques Git Hooks** :
+
+- Valider avant le push
+- Utiliser des hooks rapides
+- Documenter les hooks configurés
+- Ne pas bloquer les workflows CI/CD
+
+## Release Notes et Documentation
+
+- ✅ Générer automatiquement les release notes.
+- ✅ Documenter les changements majeurs.
+- ✅ Maintenir un historique des releases.
+
+**Exemple génération de release notes** :
+
+```yaml
+- name: Generate release notes
+  uses: ncipollo/create-release@v1
+  with:
+    tag: v${{ steps.version.outputs.version }}
+    name: Release v${{ steps.version.outputs.version }}
+    body: |
+      ## What's Changed
+      * Feature: New API endpoint
+      * Fix: Memory leak resolved
+      * Chore: Dependencies updated
+    draft: false
+    prerelease: false
+```
+
+**Bonnes pratiques Release Notes** :
+
+- Générer automatiquement depuis les commits
+- Documenter les breaking changes
+- Inclure des liens vers les issues
+- Maintenir un format cohérent

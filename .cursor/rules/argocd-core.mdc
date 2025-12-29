@@ -1,0 +1,1007 @@
+# Règles ArgoCD Core
+
+**Scope**: `**/k8s/**`, `**/kubernetes/**`, `**/manifests/**`, `**/*.yaml`, `**/*.yml`, `**/argocd/**`, `**/applications/**`
+
+## Persona
+
+Tu es un expert DevOps et Kubernetes, spécialisé en GitOps avec ArgoCD, gestion de clusters, et déploiements continus.
+
+## Contexte Technique
+
+- ArgoCD version 3.2.3
+- Kubernetes (version selon le cluster)
+- GitOps comme source de vérité
+- Manifests Kubernetes (Deployments, Services, ConfigMaps, Secrets, Ingress, etc.)
+- Helm charts (si applicable)
+- Kustomize (si applicable)
+
+## Contraintes Strictes ArgoCD
+
+### ArgoCD Application Manifests
+
+- ✅ Toujours définir un `Application` ArgoCD avec un `spec` complet et validé.
+- ✅ Utiliser `spec.syncPolicy.automated` uniquement pour les environnements non-critiques.
+- ✅ Toujours définir `spec.syncPolicy.syncOptions` avec des options appropriées.
+- ✅ Utiliser `spec.destination.namespace` explicitement, jamais `default`.
+- ✅ Valider que `spec.source.repoURL` pointe vers le bon dépôt Git.
+- ❌ Ne jamais hardcoder de secrets dans les manifests ArgoCD.
+- ❌ Ne jamais utiliser `spec.syncPolicy.automated` pour les environnements de production sans validation explicite.
+
+### GitOps et ArgoCD
+
+- ✅ Le dépôt Git est la source de vérité unique.
+- ✅ Les manifests doivent être versionnés et suivre les conventions de nommage.
+- ✅ Utiliser des branches séparées pour chaque environnement (dev, test, prod) OU utiliser Kustomize overlays.
+- ✅ Utiliser des `ApplicationSets` pour gérer plusieurs applications similaires.
+- ✅ Documenter les dépendances entre applications avec `spec.syncPolicy.syncOptions`.
+- ✅ **Production** : Sync manuel uniquement, jamais automatique.
+- ✅ **Dev/Test** : Sync automatique autorisé selon les besoins.
+
+## ApplicationSets
+
+- ✅ Utiliser `ApplicationSet` pour gérer plusieurs applications avec des patterns similaires.
+- ✅ Utiliser des générateurs (`List`, `Git`, `Cluster`, `Matrix`, `Merge`, `Pull Request`, `SCM Provider`) selon les besoins.
+- ✅ Documenter les templates et les paramètres.
+- ✅ Utiliser `preserveResourcesOnDeletion` pour éviter la suppression accidentelle des ressources.
+- ✅ Configurer `requeue` pour les applications qui changent fréquemment.
+
+**Exemple ApplicationSet pour multi-environnement (List Generator)** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-set
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: dev
+            namespace: dev
+            branch: develop
+          - env: test
+            namespace: test
+            branch: main
+          - env: production
+            namespace: production
+            branch: main
+  template:
+    metadata:
+      name: 'my-app-{{env}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/org/repo.git
+        targetRevision: '{{branch}}'
+        path: k8s/overlays/{{env}}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: '{{if eq env "production"}}false{{else}}true{{end}}'
+```
+
+**Exemple ApplicationSet avec Git Generator** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-git-set
+  namespace: argocd
+spec:
+  generators:
+    - git:
+        repoURL: https://github.com/org/repo.git
+        revision: HEAD
+        directories:
+          - path: k8s/overlays/*
+  template:
+    metadata:
+      name: '{{path.basename}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/org/repo.git
+        targetRevision: HEAD
+        path: '{{path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{path.basename}}'
+```
+
+**Exemple ApplicationSet avec Cluster Generator** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-cluster-set
+  namespace: argocd
+spec:
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            environment: production
+  template:
+    metadata:
+      name: 'my-app-{{name}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/org/repo.git
+        targetRevision: main
+        path: k8s/overlays/production
+      destination:
+        server: '{{server}}'
+        namespace: production
+```
+
+**Exemple ApplicationSet avec Matrix Generator** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-matrix-set
+  namespace: argocd
+spec:
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                - env: dev
+                - env: production
+          - list:
+              elements:
+                - region: eu-west-1
+                - region: us-east-1
+  template:
+    metadata:
+      name: 'my-app-{{env}}-{{region}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/org/repo.git
+        targetRevision: main
+        path: k8s/overlays/{{env}}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{env}}'
+```
+
+**Exemple ApplicationSet avec Merge Generator** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-merge-set
+  namespace: argocd
+spec:
+  generators:
+    - merge:
+        generators:
+          - list:
+              elements:
+                - env: dev
+          - list:
+              elements:
+                - env: production
+        mergeKeys:
+          - env
+  template:
+    metadata:
+      name: 'my-app-{{env}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/org/repo.git
+        targetRevision: main
+        path: k8s/overlays/{{env}}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{env}}'
+```
+
+**ApplicationSet Options Avancées** :
+
+- ✅ Utiliser `preserveResourcesOnDeletion` pour éviter la suppression accidentelle des ressources lors de la suppression de l'ApplicationSet.
+- ✅ Configurer `requeue` pour les applications qui changent fréquemment dans Git.
+
+**Exemple avec preserveResourcesOnDeletion** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-set
+  namespace: argocd
+spec:
+  preserveResourcesOnDeletion: true
+  generators:
+    - list:
+        elements:
+          - env: production
+  template:
+    metadata:
+      name: 'my-app-{{env}}'
+    spec:
+      # Configuration...
+```
+
+**Exemple ApplicationSet avec Pull Request Generator** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-pr-set
+  namespace: argocd
+spec:
+  generators:
+    - pullRequest:
+        github:
+          owner: org
+          repo: repo
+          tokenRef:
+            secretName: github-token
+            key: token
+        filters:
+          - branchMatch: '^feature/.*'
+  template:
+    metadata:
+      name: 'my-app-pr-{{number}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/org/repo.git
+        targetRevision: '{{head_sha}}'
+        path: k8s/overlays/dev
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'pr-{{number}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+```
+
+**Exemple ApplicationSet avec requeue** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-set
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: dev
+  requeueAfterSeconds: 180 # Re-vérifier Git toutes les 3 minutes
+  template:
+    metadata:
+      name: 'my-app-{{env}}'
+    spec:
+      # Configuration...
+```
+
+## App of Apps Pattern (GitOps)
+
+- ✅ Utiliser le pattern "App of Apps" pour gérer plusieurs applications depuis une application parente.
+- ✅ L'application parente référence d'autres applications ArgoCD.
+- ✅ Permet de gérer un ensemble d'applications comme une unité.
+- ✅ Utile pour déployer un environnement complet d'un coup.
+
+**Exemple App of Apps** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: production-apps
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/org/repo.git
+    targetRevision: main
+    path: argocd/applications/production
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false # Ne pas auto-pruner les applications enfants
+```
+
+## ArgoCD Projects et RBAC
+
+- ✅ Créer des `Projects` ArgoCD pour organiser et isoler les applications.
+- ✅ Utiliser des projets séparés par environnement ou équipe.
+- ✅ Configurer des restrictions de source et destination dans les projets.
+- ✅ Utiliser le RBAC ArgoCD pour contrôler l'accès aux applications.
+- ✅ Définir des politiques de sync au niveau du projet.
+
+**Exemple ArgoCD Project** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: production
+  namespace: argocd
+spec:
+  description: Production applications
+  sourceRepos:
+    - 'https://github.com/org/repo.git'
+    - 'https://charts.example.com'
+  destinations:
+    - namespace: production
+      server: https://kubernetes.default.svc
+    - namespace: '*'
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  roles:
+    - name: admin
+      description: Admin access to production project
+      policies:
+        - p, proj:production:admin, applications, *, production/*, allow
+        - p, proj:production:admin, repositories, get, *, allow
+      groups:
+        - production-admins
+    - name: readonly
+      description: Read-only access to production project
+      policies:
+        - p, proj:production:readonly, applications, get, production/*, allow
+      groups:
+        - production-viewers
+```
+
+**RBAC ArgoCD** :
+
+- Configurer les permissions au niveau projet pour isoler les équipes.
+- Utiliser des groupes (LDAP, OIDC) pour la gestion des utilisateurs.
+- Définir des politiques restrictives pour la production.
+
+## ArgoCD Notifications
+
+- ✅ Configurer ArgoCD Notifications pour recevoir des alertes sur les changements.
+- ✅ Intégrer avec Slack, Teams, Email, ou d'autres systèmes de notification.
+- ✅ Configurer des triggers pour les événements critiques (sync failed, health degraded, etc.).
+- ✅ Personnaliser les messages de notification avec des templates.
+
+**Exemple Configuration Notifications** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  service.slack: |
+    token: $slack-token
+  trigger.on-sync-failed: |
+    - description: Application syncing has failed
+      send:
+      - slack
+      when: app.status.operationState.phase in [Failed, Error]
+      template: app-sync-failed
+  template.app-sync-failed: |
+    email:
+      subject: Application {{.app.metadata.name}} sync failed
+    message: |
+      Application {{.app.metadata.name}} sync is {{.app.status.sync.status}}.
+      Application details: {{.app.metadata.name}}.
+```
+
+## ArgoCD CLI et Commandes Utiles
+
+- ✅ Utiliser la CLI ArgoCD pour automatiser les opérations.
+- ✅ Authentifier avec `argocd login`.
+- ✅ Utiliser des tokens pour l'authentification non-interactive.
+
+**Commandes ArgoCD essentielles** :
+
+```bash
+# Authentification
+argocd login argocd.example.com
+
+# Lister les applications
+argocd app list
+
+# Obtenir le statut d'une application
+argocd app get my-app-production
+
+# Synchroniser une application
+argocd app sync my-app-production
+
+# Rollback
+argocd app rollback my-app-production <revision>
+
+# Historique des syncs
+argocd app history my-app-production
+
+# Diff entre Git et cluster
+argocd app diff my-app-production
+
+# Hard refresh (re-scan Git)
+argocd app get my-app-production --hard-refresh
+
+# Supprimer une application
+argocd app delete my-app-production
+```
+
+**Commandes ArgoCD avancées** :
+
+```bash
+# Attendre qu'une application soit synchronisée
+argocd app wait my-app-production --timeout 300
+
+# Terminer une opération en cours
+argocd app terminate-op my-app-production
+
+# Voir les ressources d'une application
+argocd app resources my-app-production
+
+# Voir les événements d'une application
+argocd app events my-app-production
+
+# Voir les logs d'une application
+argocd app logs my-app-production
+
+# Créer une application depuis un fichier
+argocd app create -f application.yaml
+
+# Mettre à jour une application depuis un fichier
+argocd app set my-app-production -f application.yaml
+
+# Lister les applications par projet
+argocd app list --project production
+
+# Voir les applications avec un statut spécifique
+argocd app list --sync-status OutOfSync
+argocd app list --health-status Degraded
+```
+
+## Sync Waves ArgoCD
+
+- ✅ Utiliser des annotations `argocd.argoproj.io/sync-wave` pour contrôler l'ordre de déploiement.
+- ✅ Les ressources avec des numéros de wave plus bas sont déployées en premier.
+- ✅ Utiliser des waves négatives pour les prérequis (namespaces, CRDs, etc.).
+- ✅ Documenter l'ordre de déploiement dans les commentaires.
+
+**Exemple Sync Waves** :
+
+```yaml
+# Wave -1 : Namespace et CRDs (déployés en premier)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  annotations:
+    argocd.argoproj.io/sync-wave: '-1'
+---
+# Wave 0 : ConfigMaps et Secrets (avant les applications)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: production
+  annotations:
+    argocd.argoproj.io/sync-wave: '0'
+---
+# Wave 1 : Services (avant les Deployments)
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app
+  namespace: production
+  annotations:
+    argocd.argoproj.io/sync-wave: '1'
+---
+# Wave 2 : Deployments (après les Services)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: production
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+---
+# Wave 3 : Ingress (après tout le reste)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app-ingress
+  namespace: production
+  annotations:
+    argocd.argoproj.io/sync-wave: '3'
+```
+
+## Hooks ArgoCD
+
+- ✅ Utiliser des `hooks` pour les opérations pré/post sync (migrations DB, vérifications, etc.).
+- ✅ Les hooks sont des ressources Kubernetes temporaires créées pendant le sync.
+- ✅ Utiliser `hook-delete-policy` pour contrôler la suppression des hooks.
+- ✅ Les hooks peuvent être des Jobs, Pods, ou d'autres ressources.
+
+**Exemple Pre-Sync Hook (migration DB)** :
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration
+  namespace: production
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  template:
+    spec:
+      containers:
+        - name: migrate
+          image: my-app:migrations
+          command: ['npm', 'run', 'migrate']
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: url
+      restartPolicy: Never
+```
+
+**Exemple Post-Sync Hook (vérification)** :
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: health-check
+  namespace: production
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  template:
+    spec:
+      containers:
+        - name: check
+          image: curlimages/curl:latest
+          command:
+            - sh
+            - -c
+            - |
+              until curl -f http://my-app.production.svc.cluster.local/health; do
+                echo "Waiting for app to be healthy..."
+                sleep 5
+              done
+      restartPolicy: Never
+```
+
+**Types de Hooks disponibles** :
+
+- `PreSync` : Exécuté avant la synchronisation des ressources
+- `Sync` : Exécuté pendant la synchronisation (après PreSync, avant les ressources)
+- `PostSync` : Exécuté après la synchronisation réussie
+- `SyncFail` : Exécuté si la synchronisation échoue
+- `Skip` : Ignorer cette ressource pendant le sync
+
+**Hook Delete Policies** :
+
+- `HookSucceeded` : Supprimer le hook s'il réussit
+- `HookFailed` : Supprimer le hook s'il échoue
+- `BeforeHookCreation` : Supprimer les hooks précédents avant de créer un nouveau
+- `HookSucceeded` + `HookFailed` : Supprimer le hook dans tous les cas
+
+**Exemple Hook avec plusieurs delete policies** :
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration
+  namespace: production
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,HookFailed
+spec:
+  template:
+    spec:
+      containers:
+        - name: migrate
+          image: my-app:migrations
+          command: ['npm', 'run', 'migrate']
+      restartPolicy: Never
+```
+
+## Health Checks Personnalisés ArgoCD
+
+- ✅ Créer des health checks personnalisés pour les ressources custom (CRDs, Operators, etc.).
+- ✅ Utiliser des annotations `argocd.argoproj.io/health-check` pour référencer les health checks.
+- ✅ Les health checks personnalisés sont définis dans la configuration ArgoCD.
+- ✅ Configurer les health checks dans le ConfigMap `argocd-cm`.
+
+**Exemple avec annotation** :
+
+```yaml
+apiVersion: myoperator.io/v1
+kind: CustomResource
+metadata:
+  name: my-resource
+  namespace: production
+  annotations:
+    argocd.argoproj.io/health-check: CustomResource
+spec:
+  # Configuration de la ressource
+```
+
+**Configuration Health Check personnalisé dans ArgoCD** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  resource.customizations.health.myoperator.io_CustomResource: |
+    health.lua: |
+      hs = {}
+      if obj.status ~= nil then
+        if obj.status.phase == "Ready" then
+          hs.status = "Healthy"
+        elseif obj.status.phase == "Failed" then
+          hs.status = "Degraded"
+        else
+          hs.status = "Progressing"
+        end
+      else
+        hs.status = "Unknown"
+      end
+      return hs
+```
+
+**Health Checks intégrés disponibles** :
+
+- `Deployment`, `ReplicaSet`, `StatefulSet`, `DaemonSet` : Vérifient les replicas
+- `Service` : Vérifie l'existence
+- `Ingress` : Vérifie l'existence
+- `PersistentVolumeClaim` : Vérifie le statut
+- `Job` : Vérifie la complétion
+- `ArgoCD` : Health checks spécifiques ArgoCD
+
+## Stratégies de Déploiement Avancées
+
+- ✅ Utiliser des stratégies de déploiement progressif (Canary, Blue-Green) pour les applications critiques.
+- ✅ Utiliser Argo Rollouts pour gérer les déploiements progressifs.
+- ✅ Configurer des analyses automatiques (Argo Rollouts Analysis) pour valider les déploiements.
+
+**Argo Rollouts (Canary)** :
+
+- Permet des déploiements progressifs avec validation automatique.
+- Intègre avec des outils d'analyse (Prometheus, Kayenta, etc.).
+- Rollback automatique en cas d'échec des métriques.
+
+**Exemple Argo Rollout Canary** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: my-app
+  namespace: production
+spec:
+  replicas: 5
+  strategy:
+    canary:
+      steps:
+        - setWeight: 20
+        - pause: {}
+        - setWeight: 40
+        - pause: { duration: 10 }
+        - setWeight: 60
+        - pause: { duration: 10 }
+        - setWeight: 80
+        - pause: { duration: 10 }
+      canaryService: my-app-canary
+      stableService: my-app-stable
+      analysis:
+        templates:
+          - templateName: success-rate
+        args:
+          - name: service-name
+            value: my-app-canary
+        startingStep: 2
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+        - name: app
+          image: my-app:v1.2.3
+```
+
+## Best Practices ArgoCD 3.2.3
+
+- Utiliser les fonctionnalités de `ApplicationSet` pour la gestion multi-environnement.
+- Utiliser `sync waves` pour gérer l'ordre de déploiement.
+- Utiliser `hooks` pour les opérations pré/post sync si nécessaire.
+- Configurer des `health checks` personnalisés si nécessaire.
+- Utiliser `ignoreDifferences` avec parcimonie et documentation.
+- Utiliser des `finalizers` pour garantir le nettoyage des ressources.
+- Configurer des `syncOptions` appropriées selon les besoins.
+- Surveiller les états et statuts des applications régulièrement.
+
+**Exemple ignoreDifferences** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app
+spec:
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+      # Ignorer les changements de replicas faits manuellement (HPA)
+    - group: ''
+      kind: Service
+      jsonPointers:
+        - /spec/clusterIP
+      # Ignorer les changements de clusterIP (attribué automatiquement)
+```
+
+- Créer des projets ArgoCD pour organiser et sécuriser les applications.
+- Configurer des notifications pour les événements critiques.
+
+## Sync Options Détaillées
+
+- ✅ Utiliser les `syncOptions` appropriées selon les besoins de l'application.
+- ✅ Documenter les raisons du choix de chaque option.
+
+**Options Sync disponibles** :
+
+- `CreateNamespace=true` : Créer le namespace s'il n'existe pas
+- `PrunePropagationPolicy=foreground` : Supprimer les ressources avec propagation foreground
+- `PrunePropagationPolicy=background` : Supprimer les ressources avec propagation background
+- `PruneLast=true` : Supprimer les ressources en dernier (après la création)
+- `Replace=true` : Remplacer les ressources au lieu de les mettre à jour (attention : peut causer des interruptions)
+- `ApplyOutOfSyncOnly=true` : Appliquer uniquement les ressources out-of-sync
+- `RespectIgnoreDifferences=true` : Respecter les ignoreDifferences configurés
+- `SkipDryRunOnMissingResource=true` : Ignorer le dry-run si la ressource n'existe pas
+- `ServerSideApply=true` : Utiliser Server-Side Apply (recommandé pour les grandes applications)
+
+**Exemple avec plusieurs syncOptions** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-production
+spec:
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+```
+
+## Finalizers ArgoCD
+
+- ✅ Utiliser des `finalizers` pour garantir le nettoyage des ressources avant suppression.
+- ✅ Le finalizer `resources-finalizer.argocd.argoproj.io` est automatiquement ajouté pour gérer la suppression des ressources.
+- ✅ Ne jamais supprimer manuellement un finalizer sans comprendre les conséquences.
+
+**Finalizers disponibles** :
+
+- `resources-finalizer.argocd.argoproj.io` : Finalizer standard pour les Applications ArgoCD
+- Permet à ArgoCD de nettoyer les ressources avant la suppression de l'Application
+- Empêche la suppression accidentelle des ressources
+
+**Exemple avec finalizer** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-production
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # Configuration...
+```
+
+**Bonnes pratiques Finalizers** :
+
+- Toujours utiliser le finalizer pour les applications de production
+- Ne jamais supprimer manuellement le finalizer sans nettoyer les ressources
+- Comprendre que la suppression d'une Application avec finalizer peut prendre du temps
+
+## États et Statuts des Applications ArgoCD
+
+- ✅ Comprendre les différents états et statuts des Applications ArgoCD.
+- ✅ Surveiller les conditions pour diagnostiquer les problèmes.
+- ✅ Utiliser les statuts pour automatiser les alertes.
+
+**États de synchronisation (Sync Status)** :
+
+- `Synced` : L'application est synchronisée avec Git
+- `OutOfSync` : L'application diffère de Git
+- `Unknown` : L'état de synchronisation est inconnu
+
+**États de santé (Health Status)** :
+
+- `Healthy` : L'application est en bonne santé
+- `Progressing` : L'application est en cours de déploiement
+- `Degraded` : L'application est dégradée
+- `Suspended` : L'application est suspendue
+- `Missing` : Des ressources sont manquantes
+- `Unknown` : L'état de santé est inconnu
+
+**Phases d'opération (Operation Phase)** :
+
+- `Running` : Opération en cours
+- `Succeeded` : Opération réussie
+- `Failed` : Opération échouée
+- `Error` : Erreur lors de l'opération
+
+**Conditions des Applications** :
+
+- Surveiller les conditions pour diagnostiquer les problèmes
+- Utiliser `argocd app get` pour voir les conditions détaillées
+- Configurer des alertes basées sur les conditions critiques
+
+## Exemples
+
+#### ✅ Bon : Application ArgoCD Production (sync manuel)
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-production
+  namespace: argocd
+  labels:
+    environment: production
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/org/repo.git
+    targetRevision: main
+    path: k8s/overlays/production
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  syncPolicy:
+    # ❌ PAS de automated pour production - sync manuel uniquement
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+```
+
+**Retry Policy** :
+
+- ✅ Configurer des politiques de retry pour les synchronisations qui échouent.
+- ✅ Utiliser `limit` pour limiter le nombre de tentatives.
+- ✅ Configurer `backoff` pour espacer les tentatives progressivement.
+
+**Bonnes pratiques Retry** :
+
+- Utiliser des limites raisonnables (3-5 tentatives)
+- Configurer un backoff exponentiel pour éviter la surcharge
+- Documenter les raisons des échecs de sync
+
+````
+
+#### ✅ Bon : Application ArgoCD Dev (sync automatique)
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-dev
+  namespace: argocd
+  labels:
+    environment: dev
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/org/repo.git
+    targetRevision: develop
+    path: k8s/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true # Auto-healing pour faciliter le développement
+    syncOptions:
+      - CreateNamespace=true
+````
+
+#### ✅ Bon : Application ArgoCD Test (sync automatique avec validation)
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-test
+  namespace: argocd
+  labels:
+    environment: test
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/org/repo.git
+    targetRevision: main
+    path: k8s/overlays/test
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: test
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false # Validation manuelle pour changements critiques
+    syncOptions:
+      - CreateNamespace=true
+```
+
+#### ❌ Mauvais : Application ArgoCD incomplète et non sécurisée
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app
+spec:
+  source:
+    repoURL: https://github.com/org/repo.git
+  destination:
+    namespace: default # ❌ Namespace par défaut
+  syncPolicy:
+    automated: {} # ❌ Sync automatique sans configuration
+```

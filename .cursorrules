@@ -125,6 +125,42 @@ Tu es un Ingénieur Senior, spécialisé en architecture logicielle moderne et b
 - ❌ NE JAMAIS logger de données sensibles ou personnelles.
 - ❌ NE JAMAIS ajouter de dépendances sans vérifier leur maintenance et leur sécurité.
 
+### Commandes Terminal
+
+- ❌ NE JAMAIS chaîner des commandes bash avec `&&`, `||`, `;` ou d'autres opérateurs de chaînage.
+- ✅ TOUJOURS exécuter les commandes séparément, une par une.
+- ✅ Préférer des commandes individuelles pour améliorer la lisibilité, le débogage et la gestion des erreurs.
+- ❌ NE JAMAIS utiliser de commandes complexes chaînées dans un seul appel terminal.
+
+**Exemples** :
+
+❌ **Mauvais** :
+
+```bash
+cd /path/to/dir && npm install && npm run build
+```
+
+✅ **Bon** :
+
+```bash
+cd /path/to/dir
+npm install
+npm run build
+```
+
+❌ **Mauvais** :
+
+```bash
+docker build -t my-app:latest . && docker push my-app:latest
+```
+
+✅ **Bon** :
+
+```bash
+docker build -t my-app:latest .
+docker push my-app:latest
+```
+
 ## 4. Workflow et Processus
 
 ### Avant de Générer du Code

@@ -1,0 +1,520 @@
+# Règles Kubernetes - Ressources
+
+**Scope**: `**/k8s/**`, `**/kubernetes/**`, `**/manifests/**`, `**/*.yaml`, `**/*.yml`
+
+## Persona
+
+Tu es un expert DevOps et Kubernetes, spécialisé en GitOps avec ArgoCD, gestion de clusters, et déploiements continus.
+
+## Contexte Technique
+
+- Kubernetes (version selon le cluster)
+- Manifests Kubernetes (Deployments, Services, ConfigMaps, Secrets, Ingress, etc.)
+- Helm charts (si applicable)
+- Kustomize (si applicable)
+
+## Contraintes Strictes - Manifests Kubernetes
+
+- ✅ Toujours définir des `resourceQuotas` et `limitRanges` pour les namespaces.
+- ✅ Toujours définir des `resource.requests` et `resource.limits` pour les containers.
+- ✅ Utiliser des `ConfigMaps` et `Secrets` pour la configuration, jamais de valeurs hardcodées.
+- ✅ Utiliser des `ServiceAccounts` avec le principe du moindre privilège.
+- ✅ Définir des `livenessProbe` et `readinessProbe` pour tous les containers.
+- ✅ Utiliser des `PodDisruptionBudgets` pour les applications critiques.
+- ✅ Utiliser des `StatefulSets` pour les applications stateful (bases de données, etc.).
+- ✅ Utiliser des `Jobs` et `CronJobs` pour les tâches batch et récurrentes.
+- ✅ Utiliser des `InitContainers` pour préparer l'environnement avant le démarrage.
+- ✅ Configurer des `PodAntiAffinity` pour distribuer les pods sur différents nodes.
+- ✅ Configurer `terminationGracePeriodSeconds` pour permettre un arrêt gracieux.
+- ✅ Gérer les signaux SIGTERM correctement dans les applications.
+- ✅ Utiliser des `finalizers` pour garantir le nettoyage des ressources avant suppression.
+- ❌ Ne jamais exposer de secrets en clair dans les manifests.
+- ❌ Ne jamais utiliser `hostNetwork: true` ou `hostPID: true` sans justification explicite.
+
+## Deployments
+
+- ✅ Utiliser des Deployments pour les applications stateless.
+- ✅ Configurer un nombre approprié de replicas selon l'environnement (minimum 3 en production).
+- ✅ Définir des ressources requests et limits pour chaque container.
+- ✅ Configurer des health checks (liveness et readiness probes).
+- ✅ Utiliser des labels et annotations appropriés.
+- ✅ Configurer `terminationGracePeriodSeconds` pour un arrêt gracieux.
+
+**Exemple Deployment Production** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: production
+  labels:
+    app: my-app
+    version: v1.0.0
+    environment: production
+spec:
+  replicas: 3 # Minimum 3 pour haute disponibilité en production
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+        version: v1.0.0
+    spec:
+      serviceAccountName: my-app-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+        - name: app
+          image: my-registry/my-app:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              memory: '256Mi'
+              cpu: '250m'
+            limits:
+              memory: '512Mi'
+              cpu: '500m'
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          env:
+            - name: CONFIG_MAP_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: my-app-config
+                  key: config-key
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: my-app-secrets
+                  key: secret-key
+      terminationGracePeriodSeconds: 60
+```
+
+**Exemple Deployment Dev avec ressources réduites** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: dev
+  labels:
+    app: my-app
+    environment: dev
+spec:
+  replicas: 1 # Un seul replica suffit en dev
+  template:
+    spec:
+      containers:
+        - name: app
+          resources:
+            requests:
+              memory: '128Mi' # Ressources réduites pour dev
+              cpu: '100m'
+            limits:
+              memory: '256Mi'
+              cpu: '200m'
+          # Hot reload géré localement, pas de probes complexes nécessaires
+      terminationGracePeriodSeconds: 30
+```
+
+## Graceful Shutdown
+
+- ✅ Configurer `terminationGracePeriodSeconds` pour permettre un arrêt gracieux.
+- ✅ Utiliser des `preStop` hooks pour arrêter proprement l'application.
+- ✅ Gérer les signaux SIGTERM correctement dans les applications.
+
+**Exemple Graceful Shutdown Configuration** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 60 # Temps pour arrêt gracieux
+      containers:
+        - name: app
+          image: my-app:latest
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    # Arrêter d'accepter de nouvelles connexions
+                    kill -SIGTERM 1
+                    sleep 15
+                    # Forcer l'arrêt si nécessaire
+                    kill -SIGKILL 1
+```
+
+## PodDisruptionBudget
+
+- ✅ Utiliser des `PodDisruptionBudgets` pour garantir la disponibilité pendant les mises à jour.
+- ✅ Configurer `minAvailable` ou `maxUnavailable` selon les besoins.
+
+**Exemple PodDisruptionBudget** :
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: my-app-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: my-app
+```
+
+## StatefulSets (Applications Stateful)
+
+- ✅ Utiliser `StatefulSet` pour les applications nécessitant un identifiant stable (bases de données, etc.).
+- ✅ Configurer des `volumeClaimTemplates` pour le stockage persistant.
+- ✅ Définir un `serviceName` pour le headless service.
+- ✅ Utiliser des `initContainers` pour l'initialisation des données.
+- ✅ Configurer des stratégies de mise à jour appropriées (`updateStrategy`).
+
+**Exemple StatefulSet** :
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: production
+spec:
+  serviceName: postgresql-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:15
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: fast-ssd
+        resources:
+          requests:
+            storage: 50Gi
+  updateStrategy:
+    type: RollingUpdate
+```
+
+## Jobs et CronJobs
+
+- ✅ Utiliser `Job` pour les tâches batch ponctuelles.
+- ✅ Utiliser `CronJob` pour les tâches récurrentes (backups, cleanup, etc.).
+- ✅ Configurer des `backoffLimit` appropriés pour les Jobs.
+- ✅ Utiliser des `activeDeadlineSeconds` pour limiter la durée d'exécution.
+- ✅ Configurer des `successfulJobsHistoryLimit` et `failedJobsHistoryLimit` pour les CronJobs.
+
+**Exemple CronJob pour backup** :
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-backup
+  namespace: production
+spec:
+  schedule: '0 2 * * *' # Tous les jours à 2h du matin
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: backup
+              image: postgres:15
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  pg_dump -h postgresql.production.svc.cluster.local > /backup/backup-$(date +%Y%m%d).sql
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backup
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: backup-pvc
+          restartPolicy: OnFailure
+```
+
+## Init Containers
+
+- ✅ Utiliser des `initContainers` pour préparer l'environnement avant le démarrage des containers principaux.
+- ✅ Utiliser pour les migrations de base de données, vérifications de dépendances, etc.
+- ✅ Les init containers s'exécutent séquentiellement et doivent réussir avant le démarrage des containers principaux.
+
+**Exemple Init Container** :
+
+```yaml
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-db
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgresql.production.svc.cluster.local 5432; do
+                echo "Waiting for database..."
+                sleep 2
+              done
+        - name: run-migrations
+          image: my-app:migrations
+          command: ['/bin/sh', '-c', 'npm run migrate']
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: url
+      containers:
+        - name: app
+          image: my-app:latest
+```
+
+## Pod Affinity et Anti-Affinity
+
+- ✅ Utiliser `podAntiAffinity` pour distribuer les pods sur différents nodes (haute disponibilité).
+- ✅ Utiliser `podAffinity` pour co-localiser des pods liés si nécessaire.
+- ✅ Configurer des `preferredDuringSchedulingIgnoredDuringExecution` pour des préférences souples.
+- ✅ Utiliser `requiredDuringSchedulingIgnoredDuringExecution` pour des contraintes strictes.
+
+**Exemple Pod Anti-Affinity** :
+
+```yaml
+spec:
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - my-app
+                topologyKey: kubernetes.io/hostname
+```
+
+## Persistent Volumes et Storage
+
+- ✅ Utiliser des `PersistentVolumeClaims` (PVC) pour les données persistantes.
+- ✅ Définir des `StorageClasses` appropriées selon les besoins (SSD, HDD, NFS, etc.).
+- ✅ Configurer des `volumeClaimTemplates` pour les StatefulSets.
+- ✅ Sauvegarder régulièrement les volumes persistants critiques.
+- ✅ Utiliser des `volumeMounts` avec des chemins appropriés (`/data`, `/var/lib`, etc.).
+- ✅ Configurer des `accessModes` appropriés (`ReadWriteOnce`, `ReadWriteMany`, `ReadOnlyMany`).
+
+**Exemple StorageClass** :
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: ssd
+```
+
+**Exemple PersistentVolumeClaim** :
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-app-data
+  namespace: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 100Gi
+```
+
+## Resource Quotas et Limit Ranges
+
+- ✅ Définir des ResourceQuotas par namespace pour limiter la consommation.
+- ✅ Utiliser des LimitRanges pour définir des limites par défaut.
+- ✅ Configurer des quotas différents selon l'environnement.
+
+**Exemple ResourceQuota** :
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+spec:
+  hard:
+    requests.cpu: '10'
+    requests.memory: 20Gi
+    limits.cpu: '20'
+    limits.memory: 40Gi
+    persistentvolumeclaims: '10'
+    services.loadbalancers: '2'
+```
+
+**Exemple LimitRange** :
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: production-limits
+  namespace: production
+spec:
+  limits:
+    - default:
+        memory: '512Mi'
+        cpu: '500m'
+      defaultRequest:
+        memory: '256Mi'
+        cpu: '250m'
+      type: Container
+```
+
+## Auto-scaling
+
+- ✅ Utiliser `HorizontalPodAutoscaler` (HPA) pour ajuster automatiquement le nombre de replicas.
+- ✅ Configurer des métriques appropriées (CPU, mémoire, métriques custom).
+- ✅ Définir des limites min/max raisonnables pour éviter la surconsommation.
+- ✅ Utiliser `VerticalPodAutoscaler` (VPA) avec précaution (recommandé pour dev/test uniquement).
+
+**Exemple HPA** :
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+```
+
+## Ingress et TLS
+
+- ✅ Utiliser un Ingress Controller (nginx-ingress, traefik, etc.).
+- ✅ Utiliser cert-manager pour la gestion automatique des certificats TLS.
+- ✅ Configurer des certificats Let's Encrypt pour les environnements publics.
+- ✅ Utiliser des annotations appropriées pour l'Ingress Controller.
+- ✅ Configurer des règles de routage claires et sécurisées.
+
+**Exemple Ingress avec cert-manager** :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app-ingress
+  namespace: production
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - my-app.example.com
+      secretName: my-app-tls
+  rules:
+    - host: my-app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: my-app
+                port:
+                  number: 80
+```
+
+## Service Discovery et DNS Kubernetes
+
+- ✅ Utiliser les services DNS internes Kubernetes pour la communication entre pods.
+- ✅ Format DNS : `<service-name>.<namespace>.svc.cluster.local`
+- ✅ Utiliser des services headless (`clusterIP: None`) pour les StatefulSets.
+- ✅ Configurer CoreDNS pour la résolution DNS personnalisée si nécessaire.
+
+**Exemples de DNS Kubernetes** :
+
+- Service dans le même namespace : `my-app` ou `my-app:8080`
+- Service dans un autre namespace : `my-app.production.svc.cluster.local`
+- Service headless : `postgresql-headless.production.svc.cluster.local`
+- Pod dans un StatefulSet : `postgresql-0.postgresql-headless.production.svc.cluster.local`
+

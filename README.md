@@ -11,12 +11,14 @@ Dépôt de configurations modulaires et réutilisables pour Cursor, suivant la p
 ├── .cursorindexignore        # Exclusion de l'indexation (optimisation)
 ├── .cursor/
 │   ├── rules/                # Règles modulaires scopées (.mdc)
-│   │   ├── typescript.mdc
-│   │   ├── python.mdc
-│   │   ├── react-nextjs.mdc
-│   │   ├── fastapi.mdc
-│   │   ├── tests.mdc
-│   │   └── components.mdc
+│   │   ├── argocd-core.mdc
+│   │   ├── kubernetes-resources.mdc
+│   │   ├── kubernetes-security.mdc
+│   │   ├── environments-infrastructure.mdc
+│   │   ├── secrets-vault.mdc
+│   │   ├── operations.mdc
+│   │   ├── databases-storage.mdc
+│   │   └── ci-cd-pipelines.mdc
 │   └── docs/                 # Documentation pour l'IA (optionnel)
 │       └── PROJECT.md.template
 └── README.md
@@ -36,8 +38,8 @@ Dépôt de configurations modulaires et réutilisables pour Cursor, suivant la p
 
    ```bash
    mkdir -p .cursor/rules
-   cp .cursor/rules/typescript.mdc /chemin/vers/votre/projet/.cursor/rules/
-   # Répéter pour chaque règle nécessaire
+   cp .cursor/rules/argocd-core.mdc /chemin/vers/votre/projet/.cursor/rules/
+   # Répéter pour chaque règle nécessaire (kubernetes-resources.mdc, etc.)
    ```
 
 3. **Adapter le fichier `.cursorrules`** :
@@ -54,17 +56,18 @@ Les règles dans `.cursor/rules/` peuvent être activées de plusieurs façons :
 
 ## 📚 Règles Disponibles
 
-### Par Stack Technologique
+### Infrastructure et DevOps (ArgoCD & Kubernetes)
 
-- `typescript.mdc` - Règles TypeScript strictes
-- `python.mdc` - Règles Python avec type hints
-- `react-nextjs.mdc` - React 19 + Next.js 15 App Router
-- `fastapi.mdc` - FastAPI avec Pydantic v2
+Les règles Kubernetes et ArgoCD sont organisées en modules spécialisés pour une meilleure maintenabilité :
 
-### Par Type de Fichier
-
-- `tests.mdc` - Conventions pour les tests
-- `components.mdc` - Patterns pour les composants UI
+- `argocd-core.mdc` - Fonctionnalités ArgoCD (ApplicationSets, Projects, RBAC, Notifications, CLI, Sync Waves, Hooks, Rollouts)
+- `kubernetes-resources.mdc` - Ressources Kubernetes (Deployments, StatefulSets, Jobs, CronJobs, Init Containers, Persistent Volumes, HPA, Ingress)
+- `kubernetes-security.mdc` - Sécurité Kubernetes (NetworkPolicies, PodSecurityStandards, RBAC, Admission Controllers, Image Security)
+- `environments-infrastructure.mdc` - Environnements (dev/test/prod) et infrastructure (MetalLB, Cloudflare, Node Management)
+- `secrets-vault.mdc` - Gestion des secrets (Vault, External Secrets Operator, Sealed Secrets, Dynamic Secrets)
+- `operations.mdc` - Opérations (Monitoring, Logging, Backup, Troubleshooting, Helm, Kustomize, Compliance)
+- `databases-storage.mdc` - Bases de données et storage (PostgreSQL, MySQL, MongoDB, Redis, Persistent Volumes, StorageClasses)
+- `ci-cd-pipelines.mdc` - Pipelines CI/CD (GitOps workflows, Docker builds, déploiements automatisés)
 
 ## 🔧 Personnalisation
 

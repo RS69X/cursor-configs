@@ -1,0 +1,1208 @@
+# Règles Bases de Données et Storage
+
+**Scope**: `**/k8s/**`, `**/kubernetes/**`, `**/manifests/**`, `**/*.yaml`, `**/*.yml`, `**/database/**`, `**/db/**`
+
+## Persona
+
+Tu es un expert DevOps et Kubernetes, spécialisé en GitOps avec ArgoCD, gestion de clusters, et déploiements continus.
+
+## Contexte Technique
+
+- Kubernetes (version selon le cluster)
+- Bases de données : PostgreSQL, MySQL, MongoDB, Redis, etc.
+- StatefulSets pour les applications stateful
+- Persistent Volumes et StorageClasses pour le stockage persistant
+- Manifests Kubernetes (StatefulSets, PersistentVolumeClaims, StorageClasses, etc.)
+
+## Contraintes Strictes - Bases de Données et Storage
+
+- ✅ Utiliser des `StatefulSets` pour les bases de données nécessitant un identifiant stable.
+- ✅ Configurer des `volumeClaimTemplates` pour le stockage persistant.
+- ✅ Définir un `serviceName` headless pour les StatefulSets.
+- ✅ Utiliser des `PersistentVolumeClaims` (PVC) pour les données persistantes.
+- ✅ Définir des `StorageClasses` appropriées selon les besoins (SSD, HDD, NFS, etc.).
+- ✅ Sauvegarder régulièrement les volumes persistants critiques.
+- ✅ Configurer des stratégies de backup pour les bases de données.
+- ✅ Utiliser des `initContainers` pour l'initialisation des données.
+
+## StatefulSets pour Bases de Données
+
+- ✅ Utiliser `StatefulSet` pour les applications nécessitant un identifiant stable (bases de données, etc.).
+- ✅ Configurer des `volumeClaimTemplates` pour le stockage persistant.
+- ✅ Définir un `serviceName` pour le headless service.
+- ✅ Utiliser des `initContainers` pour l'initialisation des données.
+- ✅ Configurer des stratégies de mise à jour appropriées (`updateStrategy`).
+- ✅ Configurer des PodAntiAffinity pour distribuer les instances sur différents nodes.
+
+**Exemple StatefulSet PostgreSQL** :
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: production
+spec:
+  serviceName: postgresql-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - postgresql
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: postgresql
+          image: postgres:15
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: POSTGRES_DB
+              value: myapp
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: '1Gi'
+              cpu: '500m'
+            limits:
+              memory: '2Gi'
+              cpu: '1000m'
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U postgres
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U postgres
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: fast-ssd
+        resources:
+          requests:
+            storage: 50Gi
+  updateStrategy:
+    type: RollingUpdate
+```
+
+**Exemple Service Headless pour StatefulSet** :
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-headless
+  namespace: production
+spec:
+  clusterIP: None
+  selector:
+    app: postgresql
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgresql
+```
+
+**Bonnes pratiques StatefulSets** :
+
+- Utiliser des réplicas impairs pour les clusters (3, 5, 7)
+- Configurer des PodAntiAffinity pour la haute disponibilité
+- Utiliser des initContainers pour l'initialisation
+- Configurer des health checks appropriés
+- Utiliser des stratégies de mise à jour RollingUpdate
+
+## Persistent Volumes et Storage
+
+- ✅ Utiliser des `PersistentVolumeClaims` (PVC) pour les données persistantes.
+- ✅ Définir des `StorageClasses` appropriées selon les besoins (SSD, HDD, NFS, etc.).
+- ✅ Configurer des `volumeClaimTemplates` pour les StatefulSets.
+- ✅ Sauvegarder régulièrement les volumes persistants critiques.
+- ✅ Utiliser des `volumeMounts` avec des chemins appropriés (`/data`, `/var/lib`, etc.).
+- ✅ Configurer des `accessModes` appropriés (`ReadWriteOnce`, `ReadWriteMany`, `ReadOnlyMany`).
+
+**Exemple StorageClass** :
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: ssd
+```
+
+**Exemple PersistentVolumeClaim** :
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-app-data
+  namespace: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 100Gi
+```
+
+**Access Modes** :
+
+- **ReadWriteOnce (RWO)** : Un seul pod peut monter le volume en lecture/écriture (recommandé pour les bases de données)
+- **ReadWriteMany (RWX)** : Plusieurs pods peuvent monter le volume en lecture/écriture (pour les partages de fichiers)
+- **ReadOnlyMany (ROX)** : Plusieurs pods peuvent monter le volume en lecture seule
+
+**Bonnes pratiques Storage** :
+
+- Utiliser des StorageClasses avec `allowVolumeExpansion: true` pour permettre l'expansion
+- Configurer `volumeBindingMode: WaitForFirstConsumer` pour optimiser l'allocation
+- Sauvegarder régulièrement les volumes critiques
+- Documenter les chemins de montage utilisés
+
+## Bases de Données - Types et Configurations
+
+### PostgreSQL
+
+**Caractéristiques** :
+
+- Base de données relationnelle robuste
+- Supporte la réplication et le clustering
+- Idéal pour les applications transactionnelles
+
+**Configuration recommandée** :
+
+- Utiliser des StatefulSets avec réplication
+- Configurer des backups réguliers avec pg_dump ou pg_basebackup
+- Utiliser des PersistentVolumes pour les données
+- Configurer des health checks avec `pg_isready`
+
+**Exemple CronJob pour backup PostgreSQL** :
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgresql-backup
+  namespace: production
+spec:
+  schedule: '0 2 * * *' # Tous les jours à 2h du matin
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: backup
+              image: postgres:15
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  pg_dump -h postgresql-headless.production.svc.cluster.local \
+                    -U $POSTGRES_USER \
+                    -d $POSTGRES_DB \
+                    > /backup/backup-$(date +%Y%m%d).sql
+              env:
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgresql-secret
+                      key: username
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgresql-secret
+                      key: password
+                - name: POSTGRES_DB
+                  value: myapp
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backup
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: postgresql-backup-pvc
+          restartPolicy: OnFailure
+```
+
+### MySQL/MariaDB
+
+**Caractéristiques** :
+
+- Base de données relationnelle populaire
+- Supporte la réplication master-slave
+- Idéal pour les applications web
+
+**Configuration recommandée** :
+
+- Utiliser des StatefulSets avec réplication
+- Configurer des backups avec mysqldump
+- Utiliser des PersistentVolumes pour les données
+- Configurer des health checks appropriés
+
+### MongoDB
+
+**Caractéristiques** :
+
+- Base de données NoSQL orientée documents
+- Supporte la réplication et le sharding
+- Idéal pour les applications nécessitant de la flexibilité
+
+**Configuration recommandée** :
+
+- Utiliser des StatefulSets pour les replicasets MongoDB
+- Configurer des backups avec mongodump
+- Utiliser des PersistentVolumes pour les données
+- Configurer des health checks avec `mongosh`
+
+### Redis
+
+**Caractéristiques** :
+
+- Base de données en mémoire (cache, session store)
+- Supporte la réplication et le clustering
+- Idéal pour les caches et les queues
+
+**Configuration recommandée** :
+
+- Utiliser des StatefulSets pour Redis standalone
+- Utiliser des Operators (Redis Operator) pour Redis Cluster
+- Configurer la persistance RDB ou AOF selon les besoins
+- Utiliser des PersistentVolumes pour la persistance
+
+**Exemple StatefulSet Redis** :
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: production
+spec:
+  serviceName: redis-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+              name: redis
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/redis
+          resources:
+            requests:
+              memory: '512Mi'
+              cpu: '250m'
+            limits:
+              memory: '1Gi'
+              cpu: '500m'
+      volumes:
+        - name: config
+          configMap:
+            name: redis-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: fast-ssd
+        resources:
+          requests:
+            storage: 10Gi
+```
+
+## Backup des Bases de Données
+
+- ✅ Configurer des backups réguliers pour toutes les bases de données critiques.
+- ✅ Tester les procédures de restauration régulièrement.
+- ✅ Stocker les backups hors du cluster (séparation géographique si possible).
+- ✅ Chiffrer les backups contenant des données sensibles.
+- ✅ Documenter les procédures de backup et de restauration.
+
+**Stratégies de Backup** :
+
+- **Backups quotidiens** : Pour les bases de données critiques
+- **Backups hebdomadaires** : Pour les bases de données moins critiques
+- **Backups avant migrations** : Toujours sauvegarder avant les migrations majeures
+- **Rétention** : Conserver les backups selon les besoins de compliance
+
+**Bonnes pratiques Backup** :
+
+- Automatiser les backups avec des CronJobs
+- Vérifier l'intégrité des backups régulièrement
+- Tester les restaurations dans un environnement de test
+- Documenter les procédures de restauration
+- Surveiller les échecs de backup avec des alertes
+
+## Migration et Initialisation des Bases de Données
+
+- ✅ Utiliser des `initContainers` pour les migrations de schéma.
+- ✅ Utiliser des Jobs pour les migrations ponctuelles.
+- ✅ Documenter les procédures de migration.
+- ✅ Tester les migrations dans un environnement de test avant la production.
+
+**Exemple Init Container pour migration** :
+
+```yaml
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: run-migrations
+          image: my-app:migrations
+          command: ['/bin/sh', '-c', 'npm run migrate']
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: url
+      containers:
+        - name: app
+          image: my-app:latest
+```
+
+**Bonnes pratiques Migration** :
+
+- Versionner les migrations avec des outils comme Flyway ou Liquibase
+- Tester les migrations dans un environnement de test
+- Créer des backups avant les migrations
+- Documenter les rollbacks possibles
+- Utiliser des transactions pour les migrations atomiques
+
+## Haute Disponibilité pour Bases de Données
+
+- ✅ Configurer la réplication pour les bases de données critiques.
+- ✅ Utiliser des PodAntiAffinity pour distribuer les instances sur différents nodes.
+- ✅ Configurer des PodDisruptionBudgets pour garantir la disponibilité.
+- ✅ Surveiller la santé des instances de base de données.
+
+**Stratégies de réplication** :
+
+- **PostgreSQL** : Streaming replication, Patroni pour HA
+- **MySQL** : Master-Slave replication, MySQL Group Replication
+- **MongoDB** : ReplicaSet avec élection automatique
+- **Redis** : Redis Sentinel ou Redis Cluster
+
+**Exemple PodDisruptionBudget pour base de données** :
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgresql-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: postgresql
+```
+
+## Monitoring des Bases de Données
+
+- ✅ Exposer des métriques pour Prometheus.
+- ✅ Configurer des alertes pour les problèmes critiques (espace disque, connexions, performance).
+- ✅ Surveiller les temps de réponse des requêtes.
+- ✅ Surveiller l'utilisation des ressources (CPU, mémoire, disque).
+
+**Métriques importantes** :
+
+- Espace disque disponible
+- Nombre de connexions actives
+- Temps de réponse des requêtes
+- Taux d'erreur
+- Utilisation CPU et mémoire
+- Latence de réplication (si applicable)
+
+**Exemple ServiceMonitor pour PostgreSQL** :
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgresql-metrics
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: postgresql
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+```
+
+**Outils de monitoring recommandés** :
+
+- **postgres_exporter** : Exporter Prometheus pour PostgreSQL
+- **mysqld_exporter** : Exporter Prometheus pour MySQL
+- **mongodb_exporter** : Exporter Prometheus pour MongoDB
+- **redis_exporter** : Exporter Prometheus pour Redis
+
+## Volume Expansion
+
+- ✅ Utiliser l'expansion de volumes pour augmenter la capacité sans interruption.
+- ✅ Configurer `allowVolumeExpansion: true` dans les StorageClasses.
+- ✅ Documenter les procédures d'expansion.
+
+**Expansion d'un PVC** :
+
+```bash
+# Modifier le PVC pour augmenter la taille
+kubectl patch pvc my-app-data -n production -p '{"spec":{"resources":{"requests":{"storage":"200Gi"}}}}'
+
+# Vérifier le statut de l'expansion
+kubectl get pvc my-app-data -n production
+```
+
+**Exemple PVC avec expansion** :
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-app-data
+  namespace: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd # Doit avoir allowVolumeExpansion: true
+  resources:
+    requests:
+      storage: 200Gi # Augmenté depuis 100Gi
+```
+
+**Bonnes pratiques Volume Expansion** :
+
+- Vérifier que la StorageClass supporte l'expansion
+- Sauvegarder les données avant l'expansion
+- Surveiller l'espace disque pour anticiper les besoins
+- Documenter les expansions effectuées
+
+## Volume Snapshots
+
+- ✅ Utiliser des snapshots de volumes pour les backups rapides.
+- ✅ Configurer des VolumeSnapshotClasses pour les snapshots.
+- ✅ Automatiser les snapshots avec des CronJobs.
+
+**Exemple VolumeSnapshotClass** :
+
+```yaml
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: fast-snapshot-class
+driver: csi-driver
+deletionPolicy: Retain
+parameters:
+  type: fast
+```
+
+**Exemple VolumeSnapshot** :
+
+```yaml
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: postgresql-snapshot-20241229
+  namespace: production
+spec:
+  volumeSnapshotClassName: fast-snapshot-class
+  source:
+    persistentVolumeClaimName: postgresql-data-postgresql-0
+```
+
+**Restaurer depuis un snapshot** :
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgresql-restored
+  namespace: production
+spec:
+  dataSource:
+    name: postgresql-snapshot-20241229
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 50Gi
+```
+
+**Bonnes pratiques Snapshots** :
+
+- Créer des snapshots avant les changements majeurs
+- Automatiser les snapshots avec des CronJobs
+- Configurer des politiques de rétention appropriées
+- Tester les restaurations régulièrement
+
+## Database Operators
+
+- ✅ Utiliser des Operators Kubernetes pour gérer les bases de données complexes.
+- ✅ Simplifier la gestion des clusters de bases de données.
+- ✅ Automatiser les opérations courantes (backups, scaling, upgrades).
+
+**Operators recommandés** :
+
+- **Postgres Operator** : Gestion de PostgreSQL avec Patroni
+- **MySQL Operator** : Gestion de MySQL InnoDB Cluster
+- **MongoDB Community Operator** : Gestion de MongoDB
+- **Redis Operator** : Gestion de Redis Cluster
+
+**Exemple Postgres Operator** :
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgresql-cluster
+  namespace: production
+spec:
+  instances: 3
+  postgresql:
+    parameters:
+      max_connections: '200'
+  storage:
+    size: 50Gi
+    storageClass: fast-ssd
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://backups/postgresql
+      s3Credentials:
+        accessKeyId:
+          name: backup-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: backup-credentials
+          key: SECRET_ACCESS_KEY
+```
+
+**Avantages des Operators** :
+
+- Automatisation des opérations complexes
+- Gestion simplifiée des clusters
+- Backups et restaurations automatisés
+- Scaling automatique
+- Health checks et recovery automatiques
+
+## Connection Pooling
+
+- ✅ Configurer des pools de connexions pour optimiser les performances.
+- ✅ Utiliser des proxies de connexion (PgBouncer, ProxySQL, etc.).
+- ✅ Surveiller l'utilisation des connexions.
+
+**Exemple PgBouncer pour PostgreSQL** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+  namespace: production
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: pgbouncer
+          image: pgbouncer/pgbouncer:latest
+          env:
+            - name: DATABASES_HOST
+              value: postgresql-headless.production.svc.cluster.local
+            - name: DATABASES_PORT
+              value: '5432'
+            - name: DATABASES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: username
+            - name: DATABASES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: password
+            - name: POOL_MODE
+              value: transaction
+            - name: MAX_CLIENT_CONN
+              value: '1000'
+            - name: DEFAULT_POOL_SIZE
+              value: '25'
+          ports:
+            - containerPort: 6432
+              name: pgbouncer
+```
+
+**Bonnes pratiques Connection Pooling** :
+
+- Configurer des pools appropriés selon la charge
+- Surveiller l'utilisation des connexions
+- Utiliser des modes de pool adaptés (session, transaction, statement)
+- Configurer des timeouts appropriés
+
+## Read Replicas
+
+- ✅ Configurer des réplicas en lecture pour améliorer les performances.
+- ✅ Utiliser des Services séparés pour les réplicas en lecture.
+- ✅ Surveiller le lag de réplication.
+
+**Exemple Service pour Read Replicas PostgreSQL** :
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-read
+  namespace: production
+spec:
+  selector:
+    app: postgresql
+    role: replica
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgresql
+```
+
+**Configuration Read Replicas** :
+
+- Créer des StatefulSets séparés pour les réplicas
+- Configurer la réplication streaming
+- Utiliser des Services avec sélecteurs appropriés
+- Surveiller le lag de réplication
+
+**Bonnes pratiques Read Replicas** :
+
+- Utiliser pour les requêtes en lecture seule
+- Surveiller le lag de réplication
+- Configurer des health checks appropriés
+- Documenter les cas d'utilisation
+
+## Database Scaling
+
+- ✅ Planifier le scaling horizontal et vertical des bases de données.
+- ✅ Surveiller les métriques pour identifier les besoins de scaling.
+- ✅ Documenter les procédures de scaling.
+
+**Scaling Vertical** :
+
+- Augmenter les ressources (CPU, mémoire) des pods
+- Augmenter la taille des volumes persistants
+- Modifier les StatefulSets pour augmenter les ressources
+
+**Scaling Horizontal** :
+
+- Ajouter des réplicas aux StatefulSets
+- Configurer la réplication appropriée
+- Utiliser des Operators pour simplifier le scaling
+
+**Exemple scaling d'un StatefulSet** :
+
+```bash
+# Augmenter le nombre de réplicas
+kubectl scale statefulset postgresql --replicas=5 -n production
+
+# Vérifier le scaling
+kubectl get statefulset postgresql -n production
+```
+
+**Bonnes pratiques Scaling** :
+
+- Surveiller les métriques avant de scaler
+- Tester le scaling dans un environnement de test
+- Documenter les procédures de scaling
+- Planifier les fenêtres de maintenance si nécessaire
+
+## Volume Reclaim Policies
+
+- ✅ Configurer des politiques de récupération appropriées pour les volumes.
+- ✅ Utiliser `Retain` pour les volumes critiques.
+- ✅ Utiliser `Delete` pour les volumes non critiques.
+
+**Politiques de récupération** :
+
+- **Retain** : Conserver le volume après suppression du PVC (recommandé pour production)
+- **Delete** : Supprimer automatiquement le volume (pour dev/test)
+- **Recycle** : Déprécié, utiliser Retain ou Delete
+
+**Exemple PersistentVolume avec Retain** :
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgresql-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: fast-ssd
+  hostPath:
+    path: /data/postgresql
+```
+
+**Bonnes pratiques Reclaim Policies** :
+
+- Utiliser `Retain` pour les données critiques
+- Utiliser `Delete` pour les environnements de développement
+- Documenter les politiques utilisées
+- Surveiller l'utilisation du stockage
+
+## Local Storage
+
+- ✅ Utiliser le stockage local pour les performances élevées.
+- ✅ Configurer des StorageClasses pour le stockage local.
+- ✅ Gérer le stockage local avec des node labels.
+
+**Exemple StorageClass Local** :
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+```
+
+**Exemple PersistentVolume Local** :
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /mnt/local-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - node1
+```
+
+**Bonnes pratiques Local Storage** :
+
+- Utiliser pour les workloads nécessitant de hautes performances
+- Gérer le stockage local manuellement
+- Surveiller l'espace disque disponible
+- Documenter les chemins de stockage utilisés
+
+## NFS Storage
+
+- ✅ Utiliser NFS pour les volumes partagés (ReadWriteMany).
+- ✅ Configurer des StorageClasses NFS.
+- ✅ Surveiller les performances NFS.
+
+**Exemple StorageClass NFS** :
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-storage
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: nfs-server.example.com
+  path: /exports
+  mountOptions: 'nfsvers=4.1'
+volumeBindingMode: Immediate
+```
+
+**Exemple PVC NFS** :
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-data
+  namespace: production
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-storage
+  resources:
+    requests:
+      storage: 100Gi
+```
+
+**Bonnes pratiques NFS** :
+
+- Utiliser pour les volumes partagés entre pods
+- Configurer des options de montage appropriées
+- Surveiller les performances NFS
+- Utiliser NFS v4.1 ou supérieur
+
+## Database Security
+
+- ✅ Configurer SSL/TLS pour les connexions aux bases de données.
+- ✅ Chiffrer les données au repos.
+- ✅ Limiter l'accès aux bases de données avec NetworkPolicies.
+
+**Configuration SSL/TLS PostgreSQL** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-config
+  namespace: production
+data:
+  postgresql.conf: |
+    ssl = on
+    ssl_cert_file = '/etc/ssl/certs/postgresql.crt'
+    ssl_key_file = '/etc/ssl/private/postgresql.key'
+```
+
+**NetworkPolicy pour base de données** :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgresql-netpol
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: postgresql
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: production
+        - podSelector:
+            matchLabels:
+              app: my-app
+      ports:
+        - protocol: TCP
+          port: 5432
+```
+
+**Bonnes pratiques Sécurité** :
+
+- Utiliser SSL/TLS pour toutes les connexions
+- Chiffrer les données au repos
+- Limiter l'accès avec NetworkPolicies
+- Utiliser des secrets pour les credentials
+- Surveiller les accès aux bases de données
+
+## Database Connection Strings
+
+- ✅ Gérer les chaînes de connexion via des ConfigMaps ou Secrets.
+- ✅ Utiliser des variables d'environnement pour les connexions.
+- ✅ Documenter les formats de connexion.
+
+**Exemple Connection String dans Secret** :
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-connection-string
+  namespace: production
+type: Opaque
+stringData:
+  url: 'postgresql://user:password@postgresql-headless.production.svc.cluster.local:5432/mydb?sslmode=require'
+```
+
+**Utilisation dans Deployment** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: my-app:latest
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-connection-string
+                  key: url
+```
+
+**Bonnes pratiques Connection Strings** :
+
+- Stocker dans des Secrets, jamais en clair
+- Utiliser des formats standardisés
+- Inclure les paramètres SSL/TLS
+- Documenter les formats utilisés
+
+## Database Maintenance
+
+- ✅ Planifier la maintenance régulière des bases de données.
+- ✅ Utiliser des CronJobs pour les tâches de maintenance.
+- ✅ Documenter les procédures de maintenance.
+
+**Exemple CronJob pour VACUUM PostgreSQL** :
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgresql-vacuum
+  namespace: production
+spec:
+  schedule: '0 3 * * 0' # Tous les dimanches à 3h
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: vacuum
+              image: postgres:15
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  psql -h postgresql-headless.production.svc.cluster.local \
+                    -U $POSTGRES_USER \
+                    -d $POSTGRES_DB \
+                    -c "VACUUM ANALYZE;"
+              env:
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgresql-secret
+                      key: username
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgresql-secret
+                      key: password
+                - name: POSTGRES_DB
+                  value: myapp
+          restartPolicy: OnFailure
+```
+
+**Tâches de maintenance courantes** :
+
+- **PostgreSQL** : VACUUM, ANALYZE, REINDEX
+- **MySQL** : OPTIMIZE TABLE, ANALYZE TABLE
+- **MongoDB** : compact, reIndex
+- **Redis** : BGSAVE, BGREWRITEAOF
+
+**Bonnes pratiques Maintenance** :
+
+- Automatiser les tâches de maintenance
+- Planifier pendant les fenêtres de faible trafic
+- Surveiller l'impact sur les performances
+- Documenter les procédures de maintenance
+
+## Database Performance Tuning
+
+- ✅ Optimiser les performances des bases de données.
+- ✅ Surveiller les requêtes lentes.
+- ✅ Configurer les paramètres de performance appropriés.
+
+**Paramètres de performance PostgreSQL** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-config
+  namespace: production
+data:
+  postgresql.conf: |
+    shared_buffers = 256MB
+    effective_cache_size = 1GB
+    maintenance_work_mem = 128MB
+    checkpoint_completion_target = 0.9
+    wal_buffers = 16MB
+    default_statistics_target = 100
+    random_page_cost = 1.1
+    effective_io_concurrency = 200
+    work_mem = 4MB
+    min_wal_size = 1GB
+    max_wal_size = 4GB
+```
+
+**Stratégies d'optimisation** :
+
+- Analyser les requêtes lentes avec EXPLAIN ANALYZE
+- Créer des index appropriés
+- Optimiser les requêtes fréquentes
+- Configurer les paramètres selon la charge
+- Surveiller les métriques de performance
+
+**Bonnes pratiques Performance Tuning** :
+
+- Analyser régulièrement les performances
+- Créer des index pour les requêtes fréquentes
+- Optimiser les requêtes lentes
+- Configurer les paramètres selon les ressources disponibles
+- Documenter les optimisations effectuées
+
+## Database Migration Tools
+
+- ✅ Utiliser des outils de migration pour gérer les schémas.
+- ✅ Versionner les migrations avec Git.
+- ✅ Tester les migrations avant la production.
+
+**Outils de migration recommandés** :
+
+- **Flyway** : Gestion de migrations SQL
+- **Liquibase** : Gestion de migrations avec XML/YAML
+- **Alembic** : Migrations pour Python/SQLAlchemy
+- **Knex.js** : Migrations pour Node.js
+
+**Exemple Job avec Flyway** :
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration-flyway
+  namespace: production
+spec:
+  template:
+    spec:
+      containers:
+        - name: flyway
+          image: flyway/flyway:latest
+          command:
+            - flyway
+            - migrate
+            - -url=jdbc:postgresql://postgresql-headless.production.svc.cluster.local:5432/mydb
+            - -user=$(POSTGRES_USER)
+            - -password=$(POSTGRES_PASSWORD)
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: password
+          volumeMounts:
+            - name: migrations
+              mountPath: /flyway/sql
+      volumes:
+        - name: migrations
+          configMap:
+            name: db-migrations
+      restartPolicy: Never
+```
+
+**Bonnes pratiques Migration Tools** :
+
+- Versionner toutes les migrations
+- Tester les migrations dans un environnement de test
+- Créer des backups avant les migrations
+- Documenter les rollbacks possibles
+- Utiliser des transactions pour les migrations atomiques
+
+## Disaster Recovery pour Bases de Données
+
+- ✅ Planifier des procédures de disaster recovery spécifiques aux bases de données.
+- ✅ Configurer des backups géographiquement distribués.
+- ✅ Tester les procédures de récupération régulièrement.
+
+**Stratégies Disaster Recovery** :
+
+- **Backups réguliers** : Sauvegardes quotidiennes avec rétention appropriée
+- **Point-in-Time Recovery** : Utiliser WAL archiving pour PostgreSQL
+- **Réplication géographique** : Répliquer vers un autre cluster
+- **Snapshots de volumes** : Snapshots réguliers des volumes persistants
+
+**Procédure de récupération** :
+
+1. Identifier le point de récupération cible
+2. Restaurer depuis un backup ou snapshot
+3. Appliquer les WAL logs si nécessaire (Point-in-Time Recovery)
+4. Vérifier l'intégrité des données
+5. Redémarrer les applications
+
+**Bonnes pratiques Disaster Recovery** :
+
+- Automatiser les backups
+- Tester les restaurations régulièrement
+- Documenter les procédures de récupération
+- Maintenir des runbooks à jour
+- Surveiller les backups et alertes

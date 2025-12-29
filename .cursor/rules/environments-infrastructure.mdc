@@ -1,0 +1,1224 @@
+# Règles Environnements et Infrastructure
+
+**Scope**: `**/k8s/**`, `**/kubernetes/**`, `**/manifests/**`, `**/*.yaml`, `**/*.yml`, `**/argocd/**`, `**/applications/**`
+
+## Persona
+
+Tu es un expert DevOps et Kubernetes, spécialisé en GitOps avec ArgoCD, gestion de clusters, et déploiements continus.
+
+## Contexte Technique
+
+- Kubernetes (version selon le cluster)
+- **Infrastructure on-premise** : Déploiement sur serveurs physiques
+- **MetalLB** : Utilisé pour fournir des LoadBalancer services dans l'environnement on-premise
+- **Cloudflare** : Utilisé pour sécuriser et protéger les applications (WAF, DDoS protection, SSL/TLS, CDN)
+- Manifests Kubernetes (Deployments, Services, ConfigMaps, Secrets, Ingress, etc.)
+- Helm charts (si applicable)
+- Kustomize (si applicable)
+
+## Architecture Multi-Environnement
+
+Les applications sont déployées dans trois environnements distincts avec des objectifs et configurations spécifiques :
+
+### Environnement de Développement (`dev`)
+
+**Objectif** : Accélérer le développement avec hot reload et services d'infrastructure prêts.
+
+**Caractéristiques** :
+
+- ✅ **Services d'infrastructure** : Déployés et fonctionnels (DB, Redis, Message Queue, etc.)
+- ✅ **Services applicatifs** : Hot reload activé pour le développement local
+  - Frontend : Développement local avec connexion aux services infra Kubernetes
+  - Backend : Développement local avec connexion aux services infra Kubernetes
+- ✅ **Sync ArgoCD** : Automatisé avec `spec.syncPolicy.automated`
+- ✅ **Ressources** : Limites réduites pour économiser les ressources
+- ✅ **Sécurité** : PodSecurityStandards `baseline` (moins restrictif pour le développement)
+- ✅ **Monitoring** : Configuration minimale pour le développement
+- ✅ **Namespace** : `dev` ou `development`
+- ✅ **Exposition** : Pas d'exposition publique (ClusterIP ou NodePort uniquement)
+
+**Exemple de configuration ArgoCD** :
+
+```yaml
+spec:
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true # Auto-healing pour faciliter le développement
+  destination:
+    namespace: dev
+```
+
+**Exemple de Service pour dev** :
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app
+  namespace: dev
+spec:
+  type: ClusterIP # Pas de LoadBalancer en dev
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: my-app
+```
+
+### Environnement de Test (`test` ou `staging`)
+
+**Objectif** : Valider l'application dans des conditions similaires à la production, mais dans un environnement privé.
+
+**Caractéristiques** :
+
+- ✅ **Tous les services** : Déployés comme en production (frontend, backend, infrastructure)
+- ✅ **Configuration** : Identique à la production (ressources, probes, PDB, etc.)
+- ✅ **Isolation** : Environnement privé, non accessible au public
+  - Utiliser des NetworkPolicies pour isoler l'environnement
+  - Pas d'exposition publique (pas de LoadBalancer public ou Ingress externe)
+- ✅ **Sync ArgoCD** : Automatisé avec validation optionnelle
+- ✅ **Sécurité** : PodSecurityStandards `restricted` (comme production)
+- ✅ **Monitoring** : Configuration complète pour validation
+- ✅ **Namespace** : `test` ou `staging`
+
+**Exemple de configuration ArgoCD** :
+
+```yaml
+spec:
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false # Validation manuelle pour les changements critiques
+  destination:
+    namespace: test
+```
+
+**Exemple de NetworkPolicy pour isolation** :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-isolation
+  namespace: test
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring # Autoriser uniquement le monitoring
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+```
+
+### Environnement de Production (`prod` ou `production`)
+
+**Objectif** : Application résiliente, sécurisée et accessible au public.
+
+**Caractéristiques** :
+
+- ✅ **Trafic réel** : Application accessible au public via LoadBalancer/Ingress avec protection Cloudflare
+- ✅ **Résilience** :
+  - Réplicas multiples (minimum 3 pour haute disponibilité)
+  - PodDisruptionBudgets configurés
+  - Health checks robustes (liveness et readiness probes)
+- ✅ **Sécurité** :
+  - PodSecurityStandards `restricted`
+  - NetworkPolicies strictes
+  - RBAC minimal
+  - Secrets managés via Vault avec External Secrets Operator
+  - Protection Cloudflare (WAF, DDoS, SSL/TLS, Rate Limiting)
+- ✅ **Ressources** : Limites et requests appropriées pour la charge
+- ✅ **Sync ArgoCD** : **MANUEL** uniquement (pas de `automated` pour production)
+  - Validation explicite requise avant déploiement
+  - Utiliser `syncPolicy.syncOptions` avec `PruneLast=true`
+  - Utiliser des projets ArgoCD avec restrictions appropriées
+- ✅ **Monitoring** : Configuration complète avec alertes critiques
+- ✅ **Backup** : Stratégies de backup configurées pour les données critiques
+- ✅ **Namespace** : `prod` ou `production`
+
+**Exemple de configuration ArgoCD** :
+
+```yaml
+spec:
+  syncPolicy:
+    # ❌ PAS de automated pour production
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  destination:
+    namespace: production
+```
+
+## MetalLB et LoadBalancer Services
+
+**Contexte on-premise** : Dans un environnement Kubernetes on-premise, MetalLB est utilisé pour fournir des services de type LoadBalancer.
+
+**Bonnes pratiques** :
+
+- ✅ Utiliser des annotations MetalLB pour spécifier les pools d'adresses IP
+- ✅ Configurer des LoadBalancer services pour les services publics (production uniquement)
+- ✅ Utiliser des NodePort ou ClusterIP pour les environnements internes (dev, test)
+- ✅ Documenter les plages d'adresses IP allouées par MetalLB
+- ✅ Configurer des pools d'adresses IP séparés par environnement si nécessaire
+
+**Exemple de LoadBalancer avec MetalLB** :
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app-lb
+  namespace: production
+  annotations:
+    metallb.universe.tf/address-pool: production-pool
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 8080
+  selector:
+    app: my-app
+```
+
+**Configuration MetalLB** :
+
+- Définir des pools d'adresses IP dans la configuration MetalLB
+- Utiliser des pools différents pour chaque environnement si nécessaire
+- Documenter les plages d'adresses IP utilisées
+- Surveiller l'utilisation des adresses IP disponibles
+
+## Cloudflare et Sécurité des Applications
+
+**Contexte** : Cloudflare est utilisé comme couche de protection et d'accélération devant les applications Kubernetes.
+
+**Fonctionnalités Cloudflare utilisées** :
+
+- ✅ **WAF (Web Application Firewall)** : Protection contre les attaques web courantes
+- ✅ **Protection DDoS** : Protection automatique contre les attaques DDoS
+- ✅ **SSL/TLS** : Gestion des certificats SSL/TLS avec Cloudflare
+- ✅ **CDN** : Mise en cache et distribution de contenu
+- ✅ **Rate Limiting** : Limitation du taux de requêtes pour protéger les APIs
+- ✅ **Bot Protection** : Détection et blocage des bots malveillants
+- ✅ **DNS Management** : Gestion DNS via Cloudflare
+
+**Bonnes pratiques avec Cloudflare** :
+
+- ✅ **Mode SSL/TLS** : Utiliser "Full" ou "Full (strict)" pour chiffrer le trafic jusqu'à Kubernetes
+- ✅ **WAF Rules** : Configurer des règles WAF personnalisées selon les besoins de l'application
+- ✅ **Page Rules** : Utiliser les Page Rules pour optimiser le cache et la sécurité
+- ✅ **Firewall Rules** : Configurer des règles de pare-feu pour bloquer les IPs suspectes
+- ✅ **Rate Limiting** : Configurer des limites de taux pour les endpoints critiques
+- ✅ **Origin Certificates** : Utiliser les certificats originaux Cloudflare pour authentifier Kubernetes
+- ✅ **Authenticated Origin Pulls** : Activer pour sécuriser la communication Cloudflare → Kubernetes
+
+**Configuration Kubernetes avec Cloudflare** :
+
+- ✅ Configurer les annotations Ingress pour indiquer l'utilisation de Cloudflare
+- ✅ Utiliser les headers Cloudflare (`CF-Connecting-IP`, `CF-Ray`, etc.) pour le logging
+- ✅ Configurer les IPs Cloudflare dans les NetworkPolicies si nécessaire
+- ✅ Utiliser les certificats originaux Cloudflare avec cert-manager
+
+**Exemple Ingress avec annotations Cloudflare** :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app-ingress
+  namespace: production
+  annotations:
+    # Cert-manager pour les certificats originaux Cloudflare
+    cert-manager.io/cluster-issuer: cloudflare-origin-issuer
+    # Headers Cloudflare pour logging
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Forwarded-For $http_cf_connecting_ip";
+      more_set_headers "X-Real-IP $http_cf_connecting_ip";
+    # Rate limiting via Cloudflare (configuré dans Cloudflare Dashboard)
+    nginx.ingress.kubernetes.io/limit-rps: '100'
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - my-app.example.com
+      secretName: my-app-cloudflare-tls
+  rules:
+    - host: my-app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: my-app
+                port:
+                  number: 80
+```
+
+**Configuration Cloudflare Origin Certificate avec cert-manager** :
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: cloudflare-origin-issuer
+spec:
+  acme:
+    email: admin@example.com
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: cloudflare-origin-issuer-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+```
+
+**Sécurité Cloudflare** :
+
+- ✅ Activer "Always Use HTTPS" pour forcer HTTPS
+- ✅ Configurer "Minimum TLS Version" à TLS 1.2 minimum
+- ✅ Activer "Automatic HTTPS Rewrites"
+- ✅ Configurer "Opportunistic Encryption"
+- ✅ Utiliser "Authenticated Origin Pulls" pour sécuriser la communication
+- ✅ Configurer des règles WAF pour bloquer les patterns d'attaque connus
+- ✅ Activer "Bot Fight Mode" ou "Super Bot Fight Mode" selon les besoins
+- ✅ Configurer des Rate Limiting Rules pour protéger les endpoints sensibles
+
+**Monitoring Cloudflare** :
+
+- ✅ Utiliser Cloudflare Analytics pour surveiller le trafic
+- ✅ Configurer des alertes Cloudflare pour les événements critiques
+- ✅ Intégrer les logs Cloudflare avec les systèmes de monitoring (Grafana, etc.)
+- ✅ Surveiller les métriques de performance (cache hit ratio, response time, etc.)
+
+## Organisation des Manifests par Environnement
+
+**Structure recommandée** :
+
+```
+k8s/
+├── base/                    # Manifests de base (Kustomize)
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── kustomization.yaml
+├── overlays/
+│   ├── dev/
+│   │   ├── kustomization.yaml
+│   │   └── patches/         # Patches spécifiques dev
+│   ├── test/
+│   │   ├── kustomization.yaml
+│   │   └── patches/         # Patches spécifiques test
+│   └── production/
+│       ├── kustomization.yaml
+│       └── patches/          # Patches spécifiques production
+└── argocd/
+    ├── applications/
+    │   ├── dev-app.yaml
+    │   ├── test-app.yaml
+    │   └── production-app.yaml
+```
+
+**Conventions de nommage** :
+
+- Applications ArgoCD : `<app-name>-<env>.yaml` (ex: `my-app-dev.yaml`)
+- Manifests Kubernetes : Organisés par environnement dans des dossiers séparés
+- Labels : Toujours inclure `environment: <env>` dans les labels
+
+## Node Management (Infrastructure On-Premise)
+
+- ✅ Gérer les mises à jour des nodes de manière planifiée.
+- ✅ Utiliser `kubectl drain` avant la maintenance d'un node.
+- ✅ Utiliser `kubectl uncordon` après la maintenance.
+- ✅ Configurer des `Taints` et `Tolerations` pour réserver des nodes à des workloads spécifiques.
+- ✅ Surveiller l'état des nodes (`kubectl get nodes`).
+- ✅ Configurer des `NodeSelectors` ou `NodeAffinity` si nécessaire.
+
+**Exemple Taint et Toleration** :
+
+```yaml
+# Taint sur un node (exécuté sur le node)
+kubectl taint nodes node1 dedicated=app:NoSchedule
+
+# Toleration dans le Deployment
+spec:
+  template:
+    spec:
+      tolerations:
+      - key: dedicated
+        operator: Equal
+        value: app
+        effect: NoSchedule
+      nodeSelector:
+        dedicated: app
+```
+
+**Procédures de maintenance** :
+
+1. Vérifier l'état du cluster avant la maintenance
+2. Drainer le node : `kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data`
+3. Effectuer la maintenance du node
+4. Remettre le node en service : `kubectl uncordon <node-name>`
+5. Vérifier que les pods se sont reschedulés correctement
+
+**Node Affinity et Anti-Affinity** :
+
+- ✅ Utiliser `nodeAffinity` pour diriger les pods vers des nodes spécifiques.
+- ✅ Utiliser `podAntiAffinity` pour distribuer les pods sur différents nodes.
+- ✅ Configurer des règles d'affinity selon les besoins de l'application.
+
+**Exemple Node Affinity** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-type
+                    operator: In
+                    values:
+                      - compute
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: zone
+                    operator: In
+                    values:
+                      - zone-a
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - my-app
+                topologyKey: kubernetes.io/hostname
+```
+
+**Topology Spread Constraints** :
+
+- ✅ Utiliser `topologySpreadConstraints` pour distribuer les pods uniformément.
+- ✅ Configurer des contraintes de distribution par zone, node, etc.
+
+**Exemple Topology Spread Constraints** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: my-app
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: my-app
+```
+
+## Resource Quotas et Limit Ranges par Environnement
+
+- ✅ Configurer des `ResourceQuotas` pour limiter les ressources par namespace/environnement.
+- ✅ Configurer des `LimitRanges` pour définir des limites par défaut.
+- ✅ Adapter les quotas selon les besoins de chaque environnement.
+
+**Exemple ResourceQuota pour dev** :
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: dev
+spec:
+  hard:
+    requests.cpu: '4'
+    requests.memory: 8Gi
+    limits.cpu: '8'
+    limits.memory: 16Gi
+    persistentvolumeclaims: '4'
+    pods: '20'
+```
+
+**Exemple ResourceQuota pour production** :
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+spec:
+  hard:
+    requests.cpu: '32'
+    requests.memory: 64Gi
+    limits.cpu: '64'
+    limits.memory: 128Gi
+    persistentvolumeclaims: '20'
+    pods: '100'
+```
+
+**Exemple LimitRange** :
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: production
+spec:
+  limits:
+    - default:
+        cpu: '500m'
+        memory: 512Mi
+      defaultRequest:
+        cpu: '250m'
+        memory: 256Mi
+      type: Container
+    - max:
+        cpu: '2'
+        memory: 2Gi
+      min:
+        cpu: '100m'
+        memory: 128Mi
+      type: Container
+```
+
+## Storage Classes par Environnement
+
+- ✅ Configurer des `StorageClasses` différents par environnement si nécessaire.
+- ✅ Utiliser des classes de stockage appropriées selon les besoins (SSD, HDD, etc.).
+- ✅ Documenter les classes de stockage disponibles.
+
+**Exemple StorageClass** :
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: ssd
+```
+
+**Bonnes pratiques Storage** :
+
+- Utiliser des StorageClasses différentes pour dev/test/prod si nécessaire
+- Configurer `volumeBindingMode: WaitForFirstConsumer` pour une meilleure distribution
+- Activer `allowVolumeExpansion: true` pour permettre l'expansion des volumes
+- Documenter les classes de stockage et leurs caractéristiques
+
+## Scaling et Auto-scaling par Environnement
+
+- ✅ Configurer des stratégies de scaling différentes par environnement.
+- ✅ Utiliser HPA (Horizontal Pod Autoscaler) pour le scaling automatique.
+- ✅ Configurer VPA (Vertical Pod Autoscaler) si nécessaire.
+
+**Exemple HPA pour production** :
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 2
+          periodSeconds: 15
+      selectPolicy: Max
+```
+
+**Exemple HPA pour dev** :
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+  namespace: dev
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+```
+
+**Bonnes pratiques Auto-scaling** :
+
+- Configurer des minReplicas appropriés selon l'environnement
+- Utiliser des métriques multiples (CPU, mémoire, custom metrics)
+- Configurer des politiques de scaling pour éviter les oscillations
+- Tester les stratégies de scaling dans l'environnement de test
+
+## DNS et Service Discovery
+
+- ✅ Utiliser le DNS Kubernetes pour la découverte de services.
+- ✅ Configurer des services avec des noms cohérents.
+- ✅ Utiliser des annotations pour la configuration DNS si nécessaire.
+
+**Service Discovery Kubernetes** :
+
+- Les services sont accessibles via `<service-name>.<namespace>.svc.cluster.local`
+- Utiliser des noms courts (`<service-name>`) pour l'accès dans le même namespace
+- Configurer des ExternalName Services pour les services externes
+
+**Exemple ExternalName Service** :
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-db
+  namespace: production
+spec:
+  type: ExternalName
+  externalName: db.example.com
+```
+
+**Bonnes pratiques DNS** :
+
+- Utiliser des noms de services descriptifs et cohérents
+- Documenter les dépendances entre services
+- Utiliser des ConfigMaps pour les endpoints externes si nécessaire
+
+## Ingress Controllers
+
+- ✅ Configurer un Ingress Controller (nginx-ingress, traefik, etc.).
+- ✅ Utiliser des annotations spécifiques selon le contrôleur.
+- ✅ Configurer des règles Ingress par environnement.
+
+**Exemple Ingress Controller Configuration** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-ingress-controller
+  namespace: ingress-nginx
+data:
+  ssl-protocols: 'TLSv1.2 TLSv1.3'
+  ssl-ciphers: 'ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256'
+  client-max-body-size: '10m'
+  proxy-body-size: '10m'
+```
+
+**Bonnes pratiques Ingress** :
+
+- Utiliser TLS pour toutes les routes
+- Configurer des annotations pour la sécurité (rate limiting, WAF, etc.)
+- Utiliser des classes Ingress différentes par environnement si nécessaire
+- Documenter les règles Ingress et leurs raisons
+
+## Environment Promotion
+
+- ✅ Définir un processus de promotion d'environnement (dev → test → prod).
+- ✅ Utiliser ArgoCD pour gérer les promotions.
+- ✅ Valider les changements avant promotion.
+
+**Processus de promotion recommandé** :
+
+1. Développement dans `dev` avec validation automatique
+2. Promotion vers `test` après validation réussie
+3. Tests d'intégration et de charge dans `test`
+4. Promotion vers `production` après validation explicite
+
+**Bonnes pratiques Promotion** :
+
+- Automatiser la promotion dev → test
+- Requérir une validation manuelle pour test → production
+- Documenter les critères de promotion
+- Utiliser des tags Git pour marquer les versions promues
+
+## Disaster Recovery et High Availability
+
+- ✅ Configurer des stratégies de haute disponibilité pour la production.
+- ✅ Planifier des procédures de disaster recovery.
+- ✅ Tester régulièrement les procédures de récupération.
+
+**Stratégies HA** :
+
+- **Multi-zone deployment** : Déployer les pods dans plusieurs zones de disponibilité
+- **Multi-node distribution** : Utiliser podAntiAffinity pour distribuer les pods
+- **Database replication** : Configurer la réplication des bases de données
+- **Backup réguliers** : Automatiser les backups des données critiques
+
+**Exemple Multi-zone Deployment** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 6
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - my-app
+              topologyKey: topology.kubernetes.io/zone
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: my-app
+```
+
+**Procédures Disaster Recovery** :
+
+1. Identifier les ressources critiques
+2. Configurer des backups automatiques
+3. Documenter les procédures de restauration
+4. Tester les procédures régulièrement
+5. Maintenir des runbooks à jour
+
+## Cost Management
+
+- ✅ Surveiller l'utilisation des ressources par environnement.
+- ✅ Optimiser les ressources allouées selon les besoins réels.
+- ✅ Documenter les coûts et les optimisations.
+
+**Bonnes pratiques Cost Management** :
+
+- Utiliser des ResourceQuotas pour limiter les ressources
+- Configurer des alertes pour l'utilisation excessive
+- Réviser régulièrement les allocations de ressources
+- Optimiser les images et les ressources selon les besoins réels
+- Utiliser des outils de monitoring pour analyser les coûts
+
+**Métriques à surveiller** :
+
+- Utilisation CPU/mémoire par namespace
+- Nombre de pods par environnement
+- Utilisation du stockage
+- Coûts des LoadBalancers (MetalLB)
+
+**Node Affinity et Anti-Affinity** :
+
+- ✅ Utiliser `nodeAffinity` pour diriger les pods vers des nodes spécifiques.
+- ✅ Utiliser `podAntiAffinity` pour distribuer les pods sur différents nodes.
+- ✅ Configurer des règles d'affinity selon les besoins de l'application.
+
+**Exemple Node Affinity** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-type
+                    operator: In
+                    values:
+                      - compute
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: zone
+                    operator: In
+                    values:
+                      - zone-a
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - my-app
+                topologyKey: kubernetes.io/hostname
+```
+
+**Topology Spread Constraints** :
+
+- ✅ Utiliser `topologySpreadConstraints` pour distribuer les pods uniformément.
+- ✅ Configurer des contraintes de distribution par zone, node, etc.
+
+**Exemple Topology Spread Constraints** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: my-app
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: my-app
+```
+
+## Resource Quotas et Limit Ranges par Environnement
+
+- ✅ Configurer des `ResourceQuotas` pour limiter les ressources par namespace/environnement.
+- ✅ Configurer des `LimitRanges` pour définir des limites par défaut.
+- ✅ Adapter les quotas selon les besoins de chaque environnement.
+
+**Exemple ResourceQuota pour dev** :
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: dev
+spec:
+  hard:
+    requests.cpu: '4'
+    requests.memory: 8Gi
+    limits.cpu: '8'
+    limits.memory: 16Gi
+    persistentvolumeclaims: '4'
+    pods: '20'
+```
+
+**Exemple ResourceQuota pour production** :
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+spec:
+  hard:
+    requests.cpu: '32'
+    requests.memory: 64Gi
+    limits.cpu: '64'
+    limits.memory: 128Gi
+    persistentvolumeclaims: '20'
+    pods: '100'
+```
+
+**Exemple LimitRange** :
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: production
+spec:
+  limits:
+    - default:
+        cpu: '500m'
+        memory: 512Mi
+      defaultRequest:
+        cpu: '250m'
+        memory: 256Mi
+      type: Container
+    - max:
+        cpu: '2'
+        memory: 2Gi
+      min:
+        cpu: '100m'
+        memory: 128Mi
+      type: Container
+```
+
+## Storage Classes par Environnement
+
+- ✅ Configurer des `StorageClasses` différents par environnement si nécessaire.
+- ✅ Utiliser des classes de stockage appropriées selon les besoins (SSD, HDD, etc.).
+- ✅ Documenter les classes de stockage disponibles.
+
+**Exemple StorageClass** :
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: ssd
+```
+
+**Bonnes pratiques Storage** :
+
+- Utiliser des StorageClasses différentes pour dev/test/prod si nécessaire
+- Configurer `volumeBindingMode: WaitForFirstConsumer` pour une meilleure distribution
+- Activer `allowVolumeExpansion: true` pour permettre l'expansion des volumes
+- Documenter les classes de stockage et leurs caractéristiques
+
+## Scaling et Auto-scaling par Environnement
+
+- ✅ Configurer des stratégies de scaling différentes par environnement.
+- ✅ Utiliser HPA (Horizontal Pod Autoscaler) pour le scaling automatique.
+- ✅ Configurer VPA (Vertical Pod Autoscaler) si nécessaire.
+
+**Exemple HPA pour production** :
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 2
+          periodSeconds: 15
+      selectPolicy: Max
+```
+
+**Exemple HPA pour dev** :
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+  namespace: dev
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+```
+
+**Bonnes pratiques Auto-scaling** :
+
+- Configurer des minReplicas appropriés selon l'environnement
+- Utiliser des métriques multiples (CPU, mémoire, custom metrics)
+- Configurer des politiques de scaling pour éviter les oscillations
+- Tester les stratégies de scaling dans l'environnement de test
+
+## DNS et Service Discovery
+
+- ✅ Utiliser le DNS Kubernetes pour la découverte de services.
+- ✅ Configurer des services avec des noms cohérents.
+- ✅ Utiliser des annotations pour la configuration DNS si nécessaire.
+
+**Service Discovery Kubernetes** :
+
+- Les services sont accessibles via `<service-name>.<namespace>.svc.cluster.local`
+- Utiliser des noms courts (`<service-name>`) pour l'accès dans le même namespace
+- Configurer des ExternalName Services pour les services externes
+
+**Exemple ExternalName Service** :
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-db
+  namespace: production
+spec:
+  type: ExternalName
+  externalName: db.example.com
+```
+
+**Bonnes pratiques DNS** :
+
+- Utiliser des noms de services descriptifs et cohérents
+- Documenter les dépendances entre services
+- Utiliser des ConfigMaps pour les endpoints externes si nécessaire
+
+## Ingress Controllers
+
+- ✅ Configurer un Ingress Controller (nginx-ingress, traefik, etc.).
+- ✅ Utiliser des annotations spécifiques selon le contrôleur.
+- ✅ Configurer des règles Ingress par environnement.
+
+**Exemple Ingress Controller Configuration** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-ingress-controller
+  namespace: ingress-nginx
+data:
+  ssl-protocols: 'TLSv1.2 TLSv1.3'
+  ssl-ciphers: 'ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256'
+  client-max-body-size: '10m'
+  proxy-body-size: '10m'
+```
+
+**Bonnes pratiques Ingress** :
+
+- Utiliser TLS pour toutes les routes
+- Configurer des annotations pour la sécurité (rate limiting, WAF, etc.)
+- Utiliser des classes Ingress différentes par environnement si nécessaire
+- Documenter les règles Ingress et leurs raisons
+
+## Environment Promotion
+
+- ✅ Définir un processus de promotion d'environnement (dev → test → prod).
+- ✅ Utiliser ArgoCD pour gérer les promotions.
+- ✅ Valider les changements avant promotion.
+
+**Processus de promotion recommandé** :
+
+1. Développement dans `dev` avec validation automatique
+2. Promotion vers `test` après validation réussie
+3. Tests d'intégration et de charge dans `test`
+4. Promotion vers `production` après validation explicite
+
+**Exemple ApplicationSet pour promotion** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-promotion
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: dev
+            nextEnv: test
+          - env: test
+            nextEnv: production
+  template:
+    metadata:
+      name: 'my-app-{{env}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/org/repo.git
+        targetRevision: main
+        path: k8s/overlays/{{env}}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{env}}'
+```
+
+**Bonnes pratiques Promotion** :
+
+- Automatiser la promotion dev → test
+- Requérir une validation manuelle pour test → production
+- Documenter les critères de promotion
+- Utiliser des tags Git pour marquer les versions promues
+
+## Disaster Recovery et High Availability
+
+- ✅ Configurer des stratégies de haute disponibilité pour la production.
+- ✅ Planifier des procédures de disaster recovery.
+- ✅ Tester régulièrement les procédures de récupération.
+
+**Stratégies HA** :
+
+- **Multi-zone deployment** : Déployer les pods dans plusieurs zones de disponibilité
+- **Multi-node distribution** : Utiliser podAntiAffinity pour distribuer les pods
+- **Database replication** : Configurer la réplication des bases de données
+- **Backup réguliers** : Automatiser les backups des données critiques
+
+**Exemple Multi-zone Deployment** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 6
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - my-app
+              topologyKey: topology.kubernetes.io/zone
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: my-app
+```
+
+**Procédures Disaster Recovery** :
+
+1. Identifier les ressources critiques
+2. Configurer des backups automatiques
+3. Documenter les procédures de restauration
+4. Tester les procédures régulièrement
+5. Maintenir des runbooks à jour
+
+## Cost Management
+
+- ✅ Surveiller l'utilisation des ressources par environnement.
+- ✅ Optimiser les ressources allouées selon les besoins réels.
+- ✅ Documenter les coûts et les optimisations.
+
+**Bonnes pratiques Cost Management** :
+
+- Utiliser des ResourceQuotas pour limiter les ressources
+- Configurer des alertes pour l'utilisation excessive
+- Réviser régulièrement les allocations de ressources
+- Optimiser les images et les ressources selon les besoins réels
+- Utiliser des outils de monitoring pour analyser les coûts
+
+**Métriques à surveiller** :
+
+- Utilisation CPU/mémoire par namespace
+- Nombre de pods par environnement
+- Utilisation du stockage
+- Coûts des LoadBalancers (MetalLB)

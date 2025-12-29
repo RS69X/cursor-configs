@@ -1,0 +1,982 @@
+# Règles Opérations
+
+**Scope**: `**/k8s/**`, `**/kubernetes/**`, `**/manifests/**`, `**/*.yaml`, `**/*.yml`, `**/helm/**`, `**/charts/**`
+
+## Persona
+
+Tu es un expert DevOps et Kubernetes, spécialisé en GitOps avec ArgoCD, gestion de clusters, et déploiements continus.
+
+## Contexte Technique
+
+- Kubernetes (version selon le cluster)
+- Prometheus, Grafana pour le monitoring
+- Loki, Promtail/Fluent Bit pour le logging
+- Velero pour les backups
+- Helm et Kustomize pour la gestion des manifests
+- Manifests Kubernetes (Deployments, Services, ConfigMaps, Secrets, Ingress, etc.)
+
+## Monitoring et Observabilité
+
+- ✅ Ajouter des labels et annotations pour Prometheus/Grafana.
+- ✅ Utiliser des ServiceMonitors ou PodMonitors pour Prometheus.
+- ✅ Configurer des alertes appropriées pour les applications critiques.
+- ✅ Utiliser des dashboards Grafana pour visualiser les métriques.
+- ✅ Configurer des alertes pour les ressources critiques (CPU, mémoire, disque).
+- ✅ Intégrer les métriques Kubernetes avec les systèmes de monitoring existants.
+- ✅ Surveiller les métriques d'application (APM) en plus des métriques infrastructure.
+
+**Stack Observabilité Recommandé** :
+
+- **Prometheus** : Collecte et stockage des métriques
+- **Grafana** : Visualisation et dashboards
+- **Loki** : Agrégation des logs
+- **Promtail/Fluent Bit** : Collecte des logs
+- **AlertManager** : Gestion des alertes
+- **Jaeger/Tempo** : Traçage distribué
+
+**Exemple ServiceMonitor pour Prometheus** :
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: my-app-metrics
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: my-app
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+```
+
+**Exemple PodMonitor pour Prometheus** :
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: my-app-pod-metrics
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: my-app
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+```
+
+**Exemple PrometheusRule pour alertes** :
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: my-app-alerts
+  namespace: production
+spec:
+  groups:
+    - name: my-app
+      interval: 30s
+      rules:
+        - alert: HighErrorRate
+          expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'High error rate detected'
+            description: 'Error rate is {{ $value }} errors per second'
+        - alert: HighLatency
+          expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'High latency detected'
+            description: '99th percentile latency is {{ $value }} seconds'
+```
+
+**AlertManager Configuration** :
+
+- ✅ Configurer AlertManager pour gérer les alertes Prometheus.
+- ✅ Configurer des routes d'alerte (Slack, Email, PagerDuty, etc.).
+- ✅ Configurer des groupes d'alertes pour éviter le spam.
+- ✅ Configurer des silences pour les maintenances planifiées.
+
+**Exemple configuration AlertManager** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'default'
+      routes:
+        - match:
+            severity: critical
+          receiver: 'critical-alerts'
+    receivers:
+      - name: 'default'
+        slack_configs:
+          - api_url: 'https://hooks.slack.com/services/...'
+            channel: '#alerts'
+      - name: 'critical-alerts'
+        slack_configs:
+          - api_url: 'https://hooks.slack.com/services/...'
+            channel: '#critical-alerts'
+```
+
+**Bonnes pratiques Monitoring** :
+
+- Exposer des métriques au format Prometheus (`/metrics`)
+- Utiliser des labels cohérents pour faciliter les requêtes
+- Configurer des alertes pour les métriques critiques
+- Créer des dashboards Grafana pour chaque application
+- Surveiller les métriques d'application (latence, erreurs, throughput)
+- Configurer des SLO/SLI pour mesurer la qualité de service
+
+## Logging Centralisé
+
+- ✅ Configurer un système de logging centralisé (Loki, ELK Stack, etc.).
+- ✅ Utiliser des sidecars ou DaemonSets pour collecter les logs.
+- ✅ Structurer les logs avec des labels appropriés (app, namespace, environment).
+- ✅ Configurer la rétention des logs selon les besoins de compliance.
+
+**Configuration recommandée** :
+
+- Utiliser Loki avec Promtail pour un stack léger
+- Utiliser Fluentd/Fluent Bit comme collecteur de logs
+- Configurer des labels cohérents pour faciliter les recherches
+- Retenir les logs de production plus longtemps que dev/test
+
+**Exemple configuration Promtail** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: monitoring
+data:
+  promtail.yml: |
+    server:
+      http_listen_port: 3101
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+    scrape_configs:
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+```
+
+**Exemple configuration Fluent Bit** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: logging
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+
+    [INPUT]
+        Name              tail
+        Path              /var/log/containers/*.log
+        Parser            docker
+        Tag               kube.*
+
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+
+    [OUTPUT]
+        Name                loki
+        Match               *
+        Host                loki.logging.svc
+        Port                3100
+        Labels              job=fluentbit
+```
+
+**Bonnes pratiques Logging** :
+
+- Structurer les logs en JSON pour faciliter le parsing
+- Inclure des métadonnées (timestamp, level, app, namespace, pod)
+- Ne jamais logger de secrets ou données sensibles
+- Utiliser des niveaux de log appropriés (DEBUG, INFO, WARN, ERROR)
+- Configurer la rotation des logs pour éviter la saturation
+- Configurer des rétentions différentes par environnement
+- Utiliser des labels cohérents pour faciliter les recherches
+
+## Backup et Disaster Recovery
+
+- ✅ Configurer des backups réguliers pour les données critiques (bases de données, volumes persistants).
+- ✅ Tester les procédures de restauration régulièrement.
+- ✅ Documenter les procédures de disaster recovery.
+- ✅ Utiliser des outils comme Velero pour les backups Kubernetes.
+- ✅ Stocker les backups hors du cluster (séparation géographique si possible).
+
+**Velero pour Backups Kubernetes** :
+
+- ✅ Utiliser Velero pour sauvegarder l'état complet du cluster (ressources, volumes, etc.).
+- ✅ Configurer des schedules de backup automatiques.
+- ✅ Sauvegarder les namespaces critiques régulièrement.
+- ✅ Tester les restaurations dans un environnement de test.
+
+**Exemple Velero BackupSchedule** :
+
+```yaml
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: production-daily-backup
+  namespace: velero
+spec:
+  schedule: '0 2 * * *' # Tous les jours à 2h du matin
+  template:
+    includedNamespaces:
+      - production
+      - argocd
+    includedResources:
+      - '*'
+    excludedResources:
+      - events
+      - events.events.k8s.io
+    snapshotVolumes: true
+    ttl: 720h0m0s # 30 jours
+    storageLocation: default
+    volumeSnapshotLocations:
+      - default
+```
+
+**Exemple Velero Backup manuel** :
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: production-backup-20241229
+  namespace: velero
+spec:
+  includedNamespaces:
+    - production
+  snapshotVolumes: true
+  ttl: 720h0m0s
+```
+
+**Procédure de Restauration** :
+
+1. Vérifier que Velero est opérationnel
+2. Lister les backups disponibles : `velero backup get`
+3. Restaurer un backup : `velero restore create --from-backup <backup-name>`
+4. Vérifier le statut : `velero restore describe <restore-name>`
+5. Valider que les applications fonctionnent correctement
+
+**Stratégies de Backup** :
+
+- **Backups quotidiens** : Pour les données critiques
+- **Backups hebdomadaires** : Pour les données moins critiques
+- **Backups avant mises à jour** : Toujours sauvegarder avant les changements majeurs
+- **Test de restauration** : Tester les restaurations mensuellement
+
+## Troubleshooting et Debugging
+
+- ✅ Utiliser `kubectl describe` et `kubectl logs` pour diagnostiquer les problèmes.
+- ✅ Utiliser `kubectl exec` pour accéder aux containers en cas de besoin.
+- ✅ Vérifier les événements Kubernetes (`kubectl get events`).
+- ✅ Utiliser les outils de debugging ArgoCD (`argocd app get`, `argocd app history`).
+- ✅ Documenter les problèmes courants et leurs solutions.
+
+**Troubleshooting ArgoCD spécifique** :
+
+- **Application en état "Unknown"** : Vérifier la connectivité au cluster et les permissions RBAC.
+- **Sync échoue** : Vérifier les manifests YAML avec `argocd app diff`, vérifier les hooks.
+- **Health check échoue** : Vérifier les probes de santé, les health checks personnalisés.
+- **Application déconnectée** : Vérifier la configuration du cluster dans ArgoCD.
+- **Secrets non synchronisés** : Vérifier les annotations `argocd.argoproj.io/sync-wave` et les permissions.
+
+**Commandes de diagnostic Kubernetes** :
+
+```bash
+# Vérifier l'état des pods
+kubectl get pods -n <namespace>
+
+# Voir les logs d'un pod
+kubectl logs <pod-name> -n <namespace>
+
+# Voir les événements
+kubectl get events -n <namespace> --sort-by='.lastTimestamp'
+
+# Décrire une ressource
+kubectl describe pod <pod-name> -n <namespace>
+
+# Exécuter une commande dans un pod
+kubectl exec -it <pod-name> -n <namespace> -- /bin/sh
+
+# Vérifier les ressources utilisées
+kubectl top pods -n <namespace>
+kubectl top nodes
+```
+
+**Commandes de diagnostic ArgoCD** :
+
+```bash
+# Vérifier l'état d'une application
+argocd app get my-app-production --show-operation
+
+# Voir les ressources déployées
+argocd app resources my-app-production
+
+# Voir les événements
+argocd app events my-app-production
+
+# Vérifier les différences
+argocd app diff my-app-production --local k8s/
+
+# Vérifier les logs ArgoCD
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
+```
+
+## Rollback et Recovery
+
+- ✅ Utiliser les fonctionnalités de rollback d'ArgoCD en cas de problème.
+- ✅ Documenter les procédures de rollback pour chaque application critique.
+- ✅ Utiliser des tags d'images versionnés pour faciliter les rollbacks.
+- ✅ Tester les procédures de rollback régulièrement.
+
+**Rollback ArgoCD** :
+
+- Utiliser `argocd app rollback <app-name> <revision>` pour revenir à une version précédente.
+- Toujours vérifier l'état avant et après le rollback.
+- Documenter la raison du rollback.
+
+**Procédure de Rollback** :
+
+1. Identifier la version précédente stable
+2. Vérifier l'état actuel de l'application
+3. Effectuer le rollback : `argocd app rollback <app-name> <revision>`
+4. Vérifier que l'application fonctionne correctement
+5. Documenter le rollback et la raison
+
+## Image Registry et Gestion des Images
+
+- ✅ Utiliser un registry Docker privé pour les images d'application.
+- ✅ Configurer des `ImagePullSecrets` pour accéder aux registries privés.
+- ✅ Utiliser des tags versionnés (SHA, version sémantique) au lieu de `latest`.
+- ✅ Scanner les images pour les vulnérabilités avant déploiement.
+- ✅ Configurer des politiques de rétention pour nettoyer les anciennes images.
+- ✅ Utiliser des images de base minimales et maintenues.
+
+**Exemple ImagePullSecret** :
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-secret
+  namespace: production
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: <base64-encoded-docker-config>
+---
+# Utilisation dans un Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: registry-secret
+      containers:
+        - name: app
+          image: my-registry.example.com/my-app:v1.2.3 # Tag versionné
+```
+
+**Best Practices pour les images** :
+
+- Utiliser des images multi-stage pour réduire la taille
+- Épingler les versions des images de base
+- Utiliser des images distroless quand c'est possible
+- Configurer des health checks dans les images Docker
+- Scanner les images pour les vulnérabilités dans les pipelines CI/CD
+
+## Helm et Kustomize
+
+**Helm Charts** :
+
+- ✅ Utiliser Helm pour gérer les applications complexes avec templates.
+- ✅ Versionner les charts avec des versions sémantiques.
+- ✅ Utiliser des `values.yaml` séparés par environnement.
+- ✅ Documenter les valeurs configurables dans le chart.
+
+**Exemple Application ArgoCD avec Helm** :
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-helm
+spec:
+  source:
+    repoURL: https://charts.example.com
+    chart: my-app
+    targetRevision: 1.2.3
+    helm:
+      valueFiles:
+        - values-production.yaml
+      values: |
+        replicaCount: 3
+        image:
+          tag: v1.2.3
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+```
+
+**Kustomize** :
+
+- ✅ Utiliser Kustomize pour gérer les overlays par environnement.
+- ✅ Organiser avec une structure `base/` et `overlays/`.
+- ✅ Utiliser des `patchesStrategicMerge` ou `patchesJson6902` pour les modifications.
+- ✅ Documenter les différences entre environnements.
+
+**Exemple structure Kustomize** :
+
+```
+k8s/
+├── base/
+│   ├── kustomization.yaml
+│   ├── deployment.yaml
+│   └── service.yaml
+└── overlays/
+    ├── dev/
+    │   ├── kustomization.yaml
+    │   └── replica-patch.yaml
+    └── production/
+        ├── kustomization.yaml
+        └── resource-patch.yaml
+```
+
+## Compliance et Audit Logging
+
+- ✅ Activer l'audit logging Kubernetes pour tracer toutes les actions.
+- ✅ Configurer des politiques d'audit pour capturer les événements critiques.
+- ✅ Stocker les logs d'audit de manière sécurisée et conforme.
+- ✅ Configurer des alertes pour les actions suspectes.
+- ✅ Documenter les politiques de compliance (RGPD, SOC2, etc.).
+
+**Configuration Audit Policy** :
+
+```yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  - level: Metadata
+    namespaces: ['kube-system', 'kube-public']
+  - level: RequestResponse
+    resources:
+      - group: ''
+        resources: ['secrets', 'configmaps']
+      - group: 'rbac.authorization.k8s.io'
+        resources: ['*']
+  - level: Request
+    resources:
+      - group: ''
+        resources: ['*']
+```
+
+**Événements à auditer** :
+
+- Accès aux secrets et ConfigMaps
+- Modifications RBAC
+- Création/suppression de ressources critiques
+- Accès aux namespaces de production
+- Modifications des NetworkPolicies
+
+## Upgrade et Maintenance Procedures
+
+- ✅ Planifier les mises à jour de cluster de manière régulière.
+- ✅ Tester les mises à jour dans un environnement de test d'abord.
+- ✅ Utiliser `kubectl drain` et `uncordon` pour la maintenance des nodes.
+- ✅ Sauvegarder l'état du cluster avant les mises à jour majeures.
+- ✅ Documenter les procédures de rollback.
+- ✅ Communiquer les fenêtres de maintenance aux équipes.
+
+**Procédure de mise à jour recommandée** :
+
+1. Vérifier les notes de version et les breaking changes
+2. Sauvegarder l'état actuel (manifests, configurations)
+3. Tester dans un environnement de test
+4. Planifier une fenêtre de maintenance
+5. Mettre à jour les nodes un par un (drain → update → uncordon)
+6. Vérifier la santé du cluster après chaque node
+7. Documenter les problèmes rencontrés
+
+**Commandes de maintenance** :
+
+```bash
+# Drainer un node
+kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
+
+# Remettre un node en service
+kubectl uncordon <node-name>
+
+# Vérifier l'état des nodes
+kubectl get nodes
+```
+
+## Documentation et Runbooks
+
+- ✅ Maintenir une documentation à jour pour chaque application.
+- ✅ Créer des runbooks pour les procédures opérationnelles courantes.
+- ✅ Documenter les procédures d'incident et de recovery.
+- ✅ Maintenir un inventaire des applications et leurs dépendances.
+- ✅ Documenter les contacts et les responsabilités.
+
+**Structure de documentation recommandée** :
+
+- Architecture diagram
+- Dependencies graph
+- Deployment procedures
+- Rollback procedures
+- Troubleshooting guide
+- Incident response playbook
+- Contact information
+
+## Structure des Manifests
+
+- ✅ Organiser les manifests par environnement dans des dossiers séparés.
+- ✅ Utiliser des conventions de nommage cohérentes (`<app>-<env>.yaml`).
+- ✅ Documenter les dépendances entre ressources.
+- ✅ Utiliser des commentaires YAML pour expliquer les choix complexes.
+- ✅ Maintenir une structure cohérente dans tous les projets.
+- ✅ Utiliser des linters (kubeval, kube-score) pour valider les manifests.
+
+## Validation et Linting des Manifests
+
+- ✅ Valider les manifests Kubernetes avant de les commiter dans Git.
+- ✅ Utiliser `kubeval` pour valider la syntaxe et la structure.
+- ✅ Utiliser `kube-score` pour analyser la qualité et la sécurité.
+- ✅ Intégrer la validation dans les pipelines CI/CD.
+- ✅ Utiliser `helm lint` pour les charts Helm.
+- ✅ Utiliser `kustomize build` pour valider les overlays Kustomize.
+
+**Commandes de validation** :
+
+```bash
+# Valider avec kubeval
+kubeval k8s/**/*.yaml
+
+# Analyser avec kube-score
+kube-score score k8s/**/*.yaml
+
+# Valider un chart Helm
+helm lint ./charts/my-app
+
+# Valider Kustomize
+kustomize build k8s/overlays/production
+```
+
+**Intégration CI/CD** :
+
+- Valider les manifests dans les pipelines CI/CD avant le merge
+- Bloquer les déploiements si la validation échoue
+- Utiliser des hooks pre-commit pour valider localement
+- Documenter les règles de validation appliquées
+
+## Cost Management et Optimization
+
+- ✅ Surveiller l'utilisation des ressources avec des outils comme Kubecost.
+- ✅ Optimiser les requests et limits selon l'utilisation réelle.
+- ✅ Utiliser HPA pour ajuster automatiquement les ressources.
+- ✅ Nettoyer régulièrement les ressources non utilisées (PVCs, images, etc.).
+- ✅ Documenter les coûts par environnement et application.
+
+**Stratégies d'optimisation** :
+
+- Analyser l'utilisation réelle des ressources avec Prometheus
+- Ajuster les requests et limits selon les métriques
+- Utiliser des ResourceQuotas pour limiter la consommation
+- Nettoyer les images non utilisées dans le registry
+- Supprimer les PVCs et volumes non utilisés
+
+## Tracing Distribué
+
+- ✅ Configurer le tracing distribué pour suivre les requêtes à travers les services.
+- ✅ Utiliser Jaeger ou Tempo pour le stockage des traces.
+- ✅ Instrumenter les applications avec OpenTelemetry ou OpenTracing.
+- ✅ Configurer des traces pour les requêtes critiques.
+
+**Configuration OpenTelemetry** :
+
+- Utiliser OpenTelemetry pour l'instrumentation des applications
+- Configurer des exporters pour Jaeger ou Tempo
+- Instrumenter les frameworks (Express, FastAPI, etc.)
+- Configurer des traces pour les opérations critiques
+
+**Exemple configuration Tempo** :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: monitoring
+data:
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+    storage:
+      trace:
+        backend: s3
+        s3:
+          bucket: tempo-traces
+```
+
+**Bonnes pratiques Tracing** :
+
+- Instrumenter tous les services critiques
+- Configurer des traces pour les opérations longues
+- Utiliser des tags cohérents pour faciliter les recherches
+- Surveiller le volume de traces pour éviter la surcharge
+- Configurer des rétentions appropriées
+
+## SLO/SLI et Service Level Objectives
+
+- ✅ Définir des SLO (Service Level Objectives) pour les applications critiques.
+- ✅ Mesurer les SLI (Service Level Indicators) avec Prometheus.
+- ✅ Configurer des alertes basées sur les SLO.
+- ✅ Documenter les objectifs de service pour chaque application.
+
+**Exemple SLO** :
+
+- **Disponibilité** : 99.9% uptime (moins de 43 minutes d'indisponibilité par mois)
+- **Latence** : 95% des requêtes < 500ms
+- **Erreurs** : Taux d'erreur < 0.1%
+
+**Mesure des SLI avec Prometheus** :
+
+```promql
+# Disponibilité (uptime)
+sum(rate(http_requests_total{status!~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+
+# Latence (95th percentile)
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+
+# Taux d'erreur
+sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+```
+
+**Bonnes pratiques SLO** :
+
+- Définir des SLO réalistes et mesurables
+- Surveiller les SLO en temps réel
+- Configurer des alertes pour les violations de SLO
+- Documenter les SLO pour chaque application
+- Réviser les SLO régulièrement
+
+## Performance Tuning et Optimization
+
+- ✅ Optimiser les performances des applications Kubernetes.
+- ✅ Identifier et résoudre les goulots d'étranglement.
+- ✅ Utiliser des outils de profiling pour analyser les performances.
+- ✅ Optimiser les ressources selon les besoins réels.
+
+**Métriques de performance à surveiller** :
+
+- Latence des requêtes (p50, p95, p99)
+- Throughput (requêtes par seconde)
+- Utilisation CPU et mémoire
+- Temps de réponse des bases de données
+- Temps de démarrage des pods
+
+**Stratégies d'optimisation** :
+
+- Optimiser les images Docker (multi-stage builds)
+- Utiliser des caches pour réduire la charge
+- Optimiser les requêtes de base de données
+- Configurer des connexions pool appropriées
+- Utiliser des CDN pour les assets statiques
+
+**Outils de profiling** :
+
+- **pprof** : Profiling Go applications
+- **perf** : Profiling Linux applications
+- **Prometheus** : Métriques de performance
+- **Grafana** : Visualisation des performances
+
+## Capacity Planning
+
+- ✅ Planifier la capacité du cluster selon les besoins futurs.
+- ✅ Surveiller l'utilisation des ressources pour anticiper les besoins.
+- ✅ Documenter les projections de croissance.
+- ✅ Planifier les ajouts de nodes à l'avance.
+
+**Métriques pour Capacity Planning** :
+
+- Utilisation CPU/mémoire par namespace
+- Nombre de pods par node
+- Utilisation du stockage
+- Taux de croissance des ressources
+
+**Stratégies de Capacity Planning** :
+
+- Analyser les tendances d'utilisation sur 3-6 mois
+- Projeter la croissance selon les besoins métier
+- Planifier les ajouts de capacité avec un buffer
+- Documenter les projections et les décisions
+- Réviser les projections régulièrement
+
+## Network Troubleshooting
+
+- ✅ Diagnostiquer les problèmes réseau dans Kubernetes.
+- ✅ Utiliser des outils de diagnostic réseau.
+- ✅ Vérifier les NetworkPolicies et les Services.
+- ✅ Documenter les problèmes réseau courants.
+
+**Commandes de diagnostic réseau** :
+
+```bash
+# Vérifier les services
+kubectl get svc -n <namespace>
+
+# Vérifier les endpoints
+kubectl get endpoints -n <namespace>
+
+# Tester la connectivité depuis un pod
+kubectl run -it --rm debug --image=busybox --restart=Never -- nslookup <service-name>
+
+# Vérifier les NetworkPolicies
+kubectl get networkpolicies -n <namespace>
+
+# Vérifier les routes réseau
+kubectl exec <pod-name> -n <namespace> -- ip route
+```
+
+**Problèmes réseau courants** :
+
+- Services non accessibles : Vérifier les selectors et les endpoints
+- NetworkPolicies bloquant le trafic : Vérifier les règles
+- DNS non résolu : Vérifier CoreDNS
+- Timeouts : Vérifier les health checks et les probes
+
+## Storage Troubleshooting
+
+- ✅ Diagnostiquer les problèmes de stockage dans Kubernetes.
+- ✅ Vérifier les StorageClasses et les PVCs.
+- ✅ Surveiller l'utilisation du stockage.
+- ✅ Documenter les problèmes de stockage courants.
+
+**Commandes de diagnostic storage** :
+
+```bash
+# Vérifier les PVCs
+kubectl get pvc -n <namespace>
+
+# Vérifier les PVs
+kubectl get pv
+
+# Vérifier les StorageClasses
+kubectl get storageclass
+
+# Décrire un PVC
+kubectl describe pvc <pvc-name> -n <namespace>
+
+# Vérifier l'utilisation du stockage
+kubectl top pvc -n <namespace>
+```
+
+**Problèmes storage courants** :
+
+- PVC en état Pending : Vérifier les StorageClasses et les ressources
+- Volumes non montés : Vérifier les permissions et les node selectors
+- Espace disque insuffisant : Nettoyer les anciens volumes
+- Performances lentes : Vérifier le type de stockage (SSD vs HDD)
+
+## Incident Management
+
+- ✅ Définir des procédures de gestion d'incidents.
+- ✅ Configurer des alertes pour les incidents critiques.
+- ✅ Documenter les procédures de réponse aux incidents.
+- ✅ Effectuer des post-mortems après les incidents.
+
+**Procédure de gestion d'incident** :
+
+1. **Détection** : Alertes automatiques ou signalement manuel
+2. **Triage** : Évaluer la sévérité et l'impact
+3. **Containment** : Limiter l'impact de l'incident
+4. **Resolution** : Résoudre le problème
+5. **Recovery** : Restaurer les services
+6. **Post-mortem** : Analyser et documenter
+
+**Niveaux de sévérité** :
+
+- **Critical** : Service complètement indisponible
+- **High** : Service dégradé avec impact significatif
+- **Medium** : Problème avec impact limité
+- **Low** : Problème mineur sans impact utilisateur
+
+**Bonnes pratiques Incident Management** :
+
+- Configurer des alertes pour les incidents critiques
+- Maintenir des runbooks à jour
+- Effectuer des exercices d'incident réguliers
+- Documenter tous les incidents et leurs résolutions
+- Effectuer des post-mortems pour les incidents critiques
+
+## Zero-Downtime Deployments
+
+- ✅ Configurer des déploiements sans interruption de service.
+- ✅ Utiliser des stratégies de déploiement appropriées.
+- ✅ Tester les déploiements dans un environnement de test.
+- ✅ Surveiller les métriques pendant les déploiements.
+
+**Stratégies Zero-Downtime** :
+
+- **Rolling Update** : Mise à jour progressive des pods
+- **Blue-Green** : Basculer entre deux environnements
+- **Canary** : Déployer progressivement à un pourcentage de trafic
+- **A/B Testing** : Tester différentes versions simultanément
+
+**Configuration Rolling Update** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  replicas: 3
+```
+
+**Bonnes pratiques Zero-Downtime** :
+
+- Configurer des health checks robustes
+- Utiliser des PodDisruptionBudgets
+- Surveiller les métriques pendant le déploiement
+- Configurer des timeouts appropriés
+- Tester les déploiements dans un environnement de test
+
+## Health Checks et Probes
+
+- ✅ Configurer des health checks appropriés pour tous les pods.
+- ✅ Utiliser des liveness et readiness probes.
+- ✅ Configurer des startup probes pour les applications lentes.
+- ✅ Surveiller les échecs de probes.
+
+**Exemple probes complètes** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: my-app:latest
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /startup
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 30
+```
+
+**Bonnes pratiques Health Checks** :
+
+- Configurer des endpoints de santé dédiés
+- Utiliser des timeouts appropriés
+- Configurer des thresholds adaptés à l'application
+- Surveiller les échecs de probes
+- Documenter les endpoints de santé
+
+## Chaos Engineering
+
+- ✅ Utiliser le chaos engineering pour tester la résilience.
+- ✅ Tester les scénarios de défaillance courants.
+- ✅ Documenter les tests de chaos et leurs résultats.
+- ✅ Intégrer le chaos engineering dans les pipelines CI/CD.
+
+**Outils de Chaos Engineering** :
+
+- **Chaos Mesh** : Plateforme de chaos engineering pour Kubernetes
+- **Litmus** : Framework de chaos engineering
+- **Pumba** : Chaos testing pour containers
+
+**Scénarios de test courants** :
+
+- Arrêt de pods aléatoires
+- Délais réseau simulés
+- Perte de paquets réseau
+- Défaillance de nodes
+- Saturation de ressources
+
+**Bonnes pratiques Chaos Engineering** :
+
+- Commencer avec des tests simples
+- Tester dans un environnement de test d'abord
+- Documenter tous les tests et leurs résultats
+- Automatiser les tests de chaos
+- Intégrer dans les pipelines CI/CD

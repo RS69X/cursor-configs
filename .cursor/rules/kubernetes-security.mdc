@@ -1,0 +1,822 @@
+# Règles Kubernetes - Sécurité
+
+**Scope**: `**/k8s/**`, `**/kubernetes/**`, `**/manifests/**`, `**/*.yaml`, `**/*.yml`
+
+## Persona
+
+Tu es un expert DevOps et Kubernetes, spécialisé en GitOps avec ArgoCD, gestion de clusters, et déploiements continus.
+
+## Contexte Technique
+
+- Kubernetes (version selon le cluster)
+- Manifests Kubernetes (Deployments, Services, ConfigMaps, Secrets, Ingress, etc.)
+- OPA Gatekeeper / Kyverno pour les policies
+- PodSecurityStandards pour la sécurité des pods
+
+## Contraintes Strictes - Sécurité Kubernetes
+
+- ✅ Utiliser des `NetworkPolicies` pour isoler les pods.
+- ✅ Utiliser des `PodSecurityStandards` (restricted, baseline, privileged).
+- ✅ Préférer `PodSecurityStandards` restricted quand c'est possible.
+- ✅ Utiliser des `ServiceAccounts` avec des `RBAC` minimaux.
+- ✅ Valider les images avec des policies (OPA, Kyverno, etc.).
+- ✅ Scanner les images Docker pour les vulnérabilités avant déploiement.
+- ✅ Ne jamais exposer de secrets en clair dans les manifests.
+- ✅ Ne jamais utiliser `hostNetwork: true` ou `hostPID: true` sans justification explicite.
+- ✅ Utiliser le principe du moindre privilège pour tous les accès.
+
+## NetworkPolicies
+
+- ✅ Utiliser des `NetworkPolicies` pour isoler le trafic réseau entre pods.
+- ✅ Appliquer le principe de "deny by default" : bloquer tout le trafic sauf celui explicitement autorisé.
+- ✅ Configurer des règles d'ingress et d'egress appropriées.
+- ✅ Utiliser des sélecteurs de namespace et de pod pour définir les règles.
+
+**Exemple NetworkPolicy deny-all par défaut** :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: production
+spec:
+  podSelector: {} # S'applique à tous les pods
+  policyTypes:
+    - Ingress
+    - Egress
+  # Aucune règle ingress/egress = tout est bloqué
+```
+
+**Exemple NetworkPolicy** :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: my-app-netpol
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: my-app
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+```
+
+**Exemple NetworkPolicy avec IP ranges** :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: my-app-netpol-ip
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: my-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except:
+              - 10.0.0.0/24
+      ports:
+        - protocol: TCP
+          port: 8080
+```
+
+**Exemple NetworkPolicy avec port ranges** :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: my-app-netpol-ports
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: my-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8082
+```
+
+**Bonnes pratiques NetworkPolicies** :
+
+- Commencer par une NetworkPolicy deny-all par défaut
+- Ajouter progressivement des règles d'autorisation
+- Tester les NetworkPolicies dans un environnement de test
+- Documenter les règles et leurs raisons
+- Utiliser des labels cohérents pour faciliter les sélections
+
+## PodSecurityStandards
+
+- ✅ Utiliser des `PodSecurityStandards` pour appliquer des politiques de sécurité au niveau du namespace.
+- ✅ Préférer `restricted` pour la production.
+- ✅ Utiliser `baseline` pour le développement si nécessaire.
+- ✅ Éviter `privileged` sauf cas exceptionnels documentés.
+
+**Exemple PodSecurityStandards au niveau namespace** :
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+```
+
+**Niveaux de sécurité** :
+
+- **restricted** : Le plus restrictif, pour la production
+- **baseline** : Niveau intermédiaire, pour le développement
+- **privileged** : Aucune restriction, à éviter sauf cas exceptionnels
+
+**Modes PodSecurityStandards** :
+
+- `enforce` : Applique strictement le niveau (bloque les pods non conformes)
+- `audit` : Avertit mais n'applique pas (pour la transition)
+- `warn` : Affiche un avertissement mais autorise le déploiement
+
+**Exemple avec modes différents** :
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+```
+
+**Pod Security Admission Exemptions** :
+
+Pour certains workloads qui nécessitent des privilèges (ex: DaemonSets système), utiliser des exemptions :
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-system
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+```
+
+**Bonnes pratiques PodSecurityStandards** :
+
+- Utiliser `restricted` pour tous les namespaces de production
+- Utiliser `baseline` pour le développement si nécessaire
+- Éviter `privileged` sauf pour les namespaces système
+- Documenter les exemptions et leurs raisons
+- Tester les PodSecurityStandards dans un environnement de test avant production
+
+## ServiceAccounts et RBAC
+
+- ✅ Créer un `ServiceAccount` dédié pour chaque application.
+- ✅ Utiliser le principe du moindre privilège pour les permissions RBAC.
+- ✅ Utiliser des `Roles` au niveau namespace plutôt que `ClusterRoles` quand c'est possible.
+- ✅ Documenter toutes les permissions accordées.
+
+**Exemple ServiceAccount avec RBAC minimal** :
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-app-sa
+  namespace: production
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: my-app-role
+  namespace: production
+rules:
+  - apiGroups: ['']
+    resources: ['configmaps', 'secrets']
+    verbs: ['get', 'list']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: my-app-rolebinding
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: my-app-sa
+    namespace: production
+roleRef:
+  kind: Role
+  name: my-app-role
+  apiGroup: rbac.authorization.k8s.io
+```
+
+**Bonnes pratiques RBAC** :
+
+- Ne jamais utiliser `*` pour les verbs sauf si absolument nécessaire.
+- Limiter les ressources accessibles au strict minimum.
+- Utiliser des `RoleBindings` plutôt que `ClusterRoleBindings` quand c'est possible.
+- Réviser régulièrement les permissions accordées.
+- Utiliser des `ClusterRoles` uniquement pour les ressources cluster-scoped.
+- Utiliser des `Roles` pour les ressources namespace-scoped.
+
+**Quand utiliser Role vs ClusterRole** :
+
+- **Role** : Pour les ressources dans un namespace spécifique (ConfigMaps, Secrets, Deployments, etc.)
+- **ClusterRole** : Pour les ressources cluster-scoped (Nodes, PersistentVolumes, ClusterRoles, etc.) OU pour réutiliser dans plusieurs namespaces
+
+**Exemple ClusterRole (pour ressources cluster-scoped)** :
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pv-reader
+rules:
+  - apiGroups: ['']
+    resources: ['persistentvolumes']
+    verbs: ['get', 'list']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pv-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: my-app-sa
+    namespace: production
+roleRef:
+  kind: ClusterRole
+  name: pv-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+**ServiceAccount Token Management** :
+
+- ✅ Désactiver l'auto-mount des tokens si non nécessaires.
+- ✅ Utiliser des tokens de courte durée pour les ServiceAccounts.
+- ✅ Limiter l'accès aux tokens avec RBAC.
+
+**Exemple ServiceAccount sans auto-mount de token** :
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-app-sa
+  namespace: production
+automountServiceAccountToken: false # Désactiver l'auto-mount si non nécessaire
+```
+
+## Admission Controllers et Policies (OPA/Kyverno)
+
+- ✅ Utiliser OPA Gatekeeper ou Kyverno pour appliquer des policies Kubernetes.
+- ✅ Créer des policies pour valider les images, les ressources, la sécurité, etc.
+- ✅ Bloquer le déploiement d'applications non conformes aux policies.
+- ✅ Documenter toutes les policies appliquées.
+
+**Exemple Policy Kyverno (validation des ressources)** :
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resources
+spec:
+  validationFailureAction: enforce
+  rules:
+    - name: check-resources
+      match:
+        resources:
+          kinds:
+            - Pod
+      validate:
+        message: 'CPU and memory resource requests and limits are required'
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    memory: '?*'
+                    cpu: '?*'
+                  limits:
+                    memory: '?*'
+                    cpu: '?*'
+```
+
+**Exemple Policy Kyverno (validation des images)** :
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-latest-tag
+spec:
+  validationFailureAction: enforce
+  rules:
+    - name: require-image-tag
+      match:
+        resources:
+          kinds:
+            - Pod
+      validate:
+        message: "Using 'latest' tag is not allowed"
+        pattern:
+          spec:
+            containers:
+              - image: '!*:latest'
+```
+
+**Policies recommandées** :
+
+- Bloquer l'utilisation du tag `latest` pour les images
+- Exiger des ressources requests et limits pour tous les containers
+- Bloquer l'utilisation de `hostNetwork`, `hostPID`, `hostIPC`
+- Exiger des `securityContext` non-root
+- Valider les registries d'images autorisés
+
+**Exemple Policy OPA Gatekeeper (validation des ressources)** :
+
+```yaml
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredresources
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredResources
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            limits:
+              type: array
+              items:
+                type: string
+            requests:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredresources
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.resources.limits.cpu
+          msg := "Container is missing CPU limit"
+        }
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.resources.requests.cpu
+          msg := "Container is missing CPU request"
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredResources
+metadata:
+  name: require-resources
+spec:
+  match:
+    kinds:
+      - apiGroups: ['apps']
+        kinds: ['Deployment']
+  parameters:
+    limits: ['cpu', 'memory']
+    requests: ['cpu', 'memory']
+```
+
+**Exemple Policy Kyverno (validation des securityContext)** :
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root
+spec:
+  validationFailureAction: enforce
+  rules:
+    - name: check-non-root
+      match:
+        resources:
+          kinds:
+            - Pod
+      validate:
+        message: 'Pod must run as non-root user'
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false
+```
+
+**Exemple Policy Kyverno (validation des registries autorisés)** :
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-approved-registry
+spec:
+  validationFailureAction: enforce
+  rules:
+    - name: check-registry
+      match:
+        resources:
+          kinds:
+            - Pod
+      validate:
+        message: 'Only approved registries are allowed'
+        pattern:
+          spec:
+            containers:
+              - image: 'my-registry.example.com/*'
+```
+
+## Image Security et Scanning
+
+- ✅ Scanner les images Docker pour les vulnérabilités avant déploiement.
+- ✅ Utiliser des outils comme Trivy, Clair, ou Snyk.
+- ✅ Bloquer le déploiement d'images avec des vulnérabilités critiques.
+- ✅ Utiliser des images de base minimales et maintenues.
+- ✅ Épingler les versions d'images (éviter `latest`).
+- ✅ Configurer des politiques de rétention pour nettoyer les anciennes images.
+
+**Bonnes pratiques pour les images** :
+
+- Utiliser des images distroless ou minimales (Alpine, distroless)
+- Épingler les versions des images de base
+- Scanner les images dans les pipelines CI/CD
+- Maintenir un registre d'images privé avec scanning automatique
+- Configurer des policies d'admission pour bloquer les images vulnérables
+
+**Exemple ImagePullSecret** :
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-secret
+  namespace: production
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: <base64-encoded-docker-config>
+---
+# Utilisation dans un Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: registry-secret
+      containers:
+        - name: app
+          image: my-registry.example.com/my-app:v1.2.3 # Tag versionné
+```
+
+## SecurityContext
+
+- ✅ Configurer des `securityContext` au niveau pod et container.
+- ✅ Utiliser `runAsNonRoot: true` pour éviter l'exécution en root.
+- ✅ Définir des `runAsUser` et `fsGroup` appropriés.
+- ✅ Désactiver les capacités Linux inutiles.
+- ✅ Configurer `readOnlyRootFilesystem: true` quand c'est possible.
+
+**Exemple SecurityContext** :
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: my-app:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+```
+
+**Seccomp Profiles Personnalisés** :
+
+- ✅ Utiliser des profiles Seccomp personnalisés pour réduire la surface d'attaque.
+- ✅ Configurer des profiles au niveau du pod ou du container.
+- ✅ Tester les profiles Seccomp avant la production.
+
+**Exemple avec Seccomp Profile personnalisé** :
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+  annotations:
+    seccomp.security.alpha.kubernetes.io/pod: 'localhost/my-custom-profile.json'
+spec:
+  containers:
+    - name: app
+      image: my-app:latest
+```
+
+**Capabilities Linux** :
+
+- ✅ Dropper toutes les capabilities par défaut (`drop: ALL`).
+- ✅ Ajouter uniquement les capabilities strictement nécessaires.
+- ✅ Documenter les raisons de chaque capability ajoutée.
+
+**Capabilities communes** :
+
+- `NET_BIND_SERVICE` : Bind aux ports < 1024
+- `CHOWN` : Changer le propriétaire des fichiers
+- `DAC_OVERRIDE` : Contourner les permissions de fichiers
+- `SETUID`, `SETGID` : Changer UID/GID
+- `SYS_ADMIN` : Opérations administratives (à éviter)
+
+**Bonnes pratiques SecurityContext** :
+
+- Toujours configurer `runAsNonRoot: true`
+- Définir explicitement `runAsUser` et `fsGroup`
+- Utiliser `readOnlyRootFilesystem: true` quand possible
+- Dropper toutes les capabilities et ajouter uniquement celles nécessaires
+- Configurer `allowPrivilegeEscalation: false`
+- Utiliser des Seccomp profiles restrictifs
+
+## Multi-Tenancy et Isolation
+
+- ✅ Utiliser des namespaces pour isoler les environnements et équipes.
+- ✅ Configurer des ResourceQuotas par namespace.
+- ✅ Utiliser des NetworkPolicies pour isoler le trafic réseau.
+- ✅ Utiliser des RBAC pour isoler les permissions.
+- ✅ Documenter les politiques d'isolation.
+
+**Stratégies d'isolation** :
+
+- **Isolation par namespace** : Séparer les environnements (dev, test, prod)
+- **Isolation par équipe** : Séparer les équipes dans des namespaces différents
+- **Isolation réseau** : Utiliser des NetworkPolicies pour contrôler le trafic
+- **Isolation des permissions** : Utiliser RBAC pour limiter les accès
+
+## Secrets Management
+
+- ✅ Ne jamais commiter de secrets dans Git.
+- ✅ Utiliser des secrets Kubernetes ou des systèmes externes (Vault, External Secrets Operator).
+- ✅ Chiffrer les secrets au repos.
+- ✅ Roter les secrets régulièrement.
+- ✅ Limiter l'accès aux secrets avec RBAC.
+
+**Bonnes pratiques** :
+
+- Utiliser External Secrets Operator pour synchroniser depuis Vault
+- Utiliser Sealed Secrets pour chiffrer les secrets dans Git
+- Ne jamais logger ou exposer des secrets dans les logs
+- Utiliser des annotations ArgoCD pour gérer les secrets avec sync waves
+- Documenter la rotation des secrets critiques
+
+## Compliance et Audit Logging
+
+- ✅ Activer l'audit logging Kubernetes pour tracer toutes les actions.
+- ✅ Configurer des politiques d'audit pour capturer les événements critiques.
+- ✅ Stocker les logs d'audit de manière sécurisée et conforme.
+- ✅ Configurer des alertes pour les actions suspectes.
+- ✅ Documenter les politiques de compliance (RGPD, SOC2, etc.).
+
+**Configuration Audit Policy** :
+
+```yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  - level: Metadata
+    namespaces: ['kube-system', 'kube-public']
+  - level: RequestResponse
+    resources:
+      - group: ''
+        resources: ['secrets', 'configmaps']
+      - group: 'rbac.authorization.k8s.io'
+        resources: ['*']
+  - level: Request
+    resources:
+      - group: ''
+        resources: ['*']
+```
+
+**Événements à auditer** :
+
+- Accès aux secrets et ConfigMaps
+- Modifications RBAC
+- Création/suppression de ressources critiques
+- Accès aux namespaces de production
+- Modifications des NetworkPolicies
+
+## TLS/SSL et Certificats
+
+- ✅ Utiliser TLS pour toutes les communications externes.
+- ✅ Configurer cert-manager pour la gestion automatique des certificats.
+- ✅ Utiliser des certificats valides et à jour.
+- ✅ Configurer la rotation automatique des certificats.
+- ✅ Valider les certificats dans les Ingress et Services.
+
+**Bonnes pratiques TLS** :
+
+- Utiliser TLS 1.2 minimum (TLS 1.3 recommandé)
+- Configurer des certificats avec des durées de vie appropriées
+- Utiliser cert-manager pour l'automatisation
+- Valider les certificats avant expiration
+- Configurer des alertes pour les certificats expirant
+
+## Runtime Security et Détection
+
+- ✅ Surveiller les comportements suspects au runtime.
+- ✅ Utiliser des outils comme Falco pour la détection d'intrusions.
+- ✅ Configurer des alertes pour les activités suspectes.
+- ✅ Analyser les logs pour détecter les anomalies.
+
+**Outils recommandés** :
+
+- **Falco** : Détection runtime des comportements suspects
+- **Falcosidekick** : Intégration Falco avec les systèmes d'alerting
+- **Kubescape** : Scanning de sécurité Kubernetes
+- **kube-bench** : Vérification de conformité CIS Benchmark
+
+**Exemple Falco Rule** :
+
+```yaml
+- rule: Write below binary dir
+  desc: Detect writes to binary directories
+  condition: >
+    bin_dir and evt.dir = < and open_write
+    and not package_mgmt_procs
+    and not exe_running_docker_save
+    and not python_running_aws_s3
+    and not user_known_write_below_binary_dir_activities
+  output: >
+    File below a binary directory opened for writing
+    (user=%user.name user_loginuid=%user.loginuid command=%proc.cmdline
+    file=%fd.name parent=%proc.pname pcmdline=%proc.pcmdline gparent=%proc.aname[2])
+  priority: ERROR
+  tags: [filesystem, mitre_persistence]
+```
+
+## Pod Disruption Budgets et Sécurité
+
+- ✅ Utiliser des `PodDisruptionBudgets` pour protéger contre les attaques de déni de service.
+- ✅ Configurer des PDB pour garantir la disponibilité minimale.
+- ✅ Protéger les applications critiques contre les disruptions.
+
+**Exemple PodDisruptionBudget** :
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: my-app-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: my-app
+```
+
+**Bonnes pratiques PDB** :
+
+- Configurer des PDB pour toutes les applications critiques
+- Utiliser `minAvailable` plutôt que `maxUnavailable` pour plus de sécurité
+- Tester les PDB dans un environnement de test
+- Documenter les raisons des valeurs choisies
+
+## Ephemeral Containers et Sécurité
+
+- ✅ Limiter l'utilisation des containers éphémères.
+- ✅ Surveiller l'accès aux containers éphémères.
+- ✅ Utiliser des containers éphémères uniquement pour le debugging.
+- ✅ Désactiver les containers éphémères en production si possible.
+
+**Bonnes pratiques Ephemeral Containers** :
+
+- Utiliser uniquement pour le debugging en développement
+- Limiter l'accès aux containers éphémères avec RBAC
+- Surveiller l'utilisation des containers éphémères
+- Documenter les cas d'utilisation autorisés
+
+## RuntimeClass et Isolation
+
+- ✅ Utiliser des `RuntimeClass` pour isoler les runtimes de conteneurs.
+- ✅ Configurer des runtimes sécurisés (gVisor, Kata Containers).
+- ✅ Isoler les workloads sensibles dans des runtimes sécurisés.
+
+**Exemple RuntimeClass** :
+
+```yaml
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      runtimeClassName: gvisor
+      containers:
+        - name: app
+          image: my-app:latest
+```
+
+**Runtimes sécurisés** :
+
+- **gVisor** : Sandbox léger pour isolation
+- **Kata Containers** : Isolation via machines virtuelles
+- **Firecracker** : Micro-VMs pour isolation
+
+## CIS Benchmark et Conformité
+
+- ✅ Utiliser kube-bench pour vérifier la conformité CIS Benchmark.
+- ✅ Corriger les problèmes identifiés par kube-bench.
+- ✅ Documenter les écarts de conformité et leurs raisons.
+
+**Utilisation de kube-bench** :
+
+```bash
+# Vérifier la conformité du cluster
+kubectl run --rm -i -t kube-bench --image=aquasec/kube-bench:latest --restart=Never --overrides='{"spec":{"hostPID": true, "volumes":[{"name":"var-lib-etcd","hostPath":{"path":"/var/lib/etcd"}},{"name":"var-lib-kubelet","hostPath":{"path":"/var/lib/kubelet"}},{"name":"etc-systemd","hostPath":{"path":"/etc/systemd"}},{"name":"etc-kubernetes","hostPath":{"path":"/etc/kubernetes"}}],"containers":[{"name":"kube-bench","image":"aquasec/kube-bench:latest","command":["kube-bench","run"],"volumeMounts":[{"name":"var-lib-etcd","mountPath":"/var/lib/etcd","readOnly":true},{"name":"var-lib-kubelet","mountPath":"/var/lib/kubelet","readOnly":true},{"name":"etc-systemd","mountPath":"/etc/systemd","readOnly":true},{"name":"etc-kubernetes","mountPath":"/etc/kubernetes","readOnly":true}]}}}'
+```
+
+**Bonnes pratiques CIS Benchmark** :
+
+- Exécuter kube-bench régulièrement
+- Corriger les problèmes critiques identifiés
+- Documenter les écarts acceptables
+- Intégrer kube-bench dans les pipelines CI/CD
