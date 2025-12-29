@@ -1,0 +1,76 @@
+# Règles TypeScript Strictes
+
+**Scope**: `**/*.ts`, `**/*.tsx`
+
+## Persona
+Tu es un expert TypeScript, spécialisé en typage strict, sécurité de types, et patterns avancés.
+
+## Contexte Technique
+- TypeScript 5.x avec `strict: true`
+- Utilisation de Zod pour la validation runtime et l'inférence de types
+- Pas de `any`, utilisation de `unknown` avec type guards
+- Pas d'assertions de type (`as`)
+
+## Contraintes Strictes
+
+### Typage
+- ❌ **JAMAIS** utiliser `any`. Utiliser `unknown` et des type guards.
+- ❌ **JAMAIS** utiliser d'assertions de type (`as Type`). Utiliser Zod pour la validation.
+- ❌ **JAMAIS** utiliser `@ts-ignore` ou `@ts-expect-error` sans commentaire explicatif.
+- ✅ Toujours typer les paramètres de fonction, même si TypeScript peut les inférer.
+- ✅ Utiliser `const` assertions pour les valeurs littérales immuables.
+
+### Validation Runtime
+- Utiliser Zod pour toutes les données venant de sources externes (API, formulaires, fichiers).
+- Inférer les types TypeScript depuis les schémas Zod avec `z.infer<typeof schema>`.
+- Valider les données inconnues avant de les utiliser.
+
+### Exemples
+
+#### ✅ Bon : Typage strict avec Zod
+```typescript
+import { z } from 'zod';
+
+const UserSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  age: z.number().int().min(0).max(150),
+});
+
+type User = z.infer<typeof UserSchema>;
+
+function processUser(data: unknown): User {
+  // Validation runtime + inférence de type
+  return UserSchema.parse(data);
+}
+```
+
+#### ❌ Mauvais : Assertions de type dangereuses
+```typescript
+function processUser(data: unknown): User {
+  // ❌ Assertion non sécurisée
+  return data as User;
+}
+```
+
+#### ✅ Bon : Type guards pour unknown
+```typescript
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+function processInput(input: unknown): string {
+  if (!isString(input)) {
+    throw new Error('Input must be a string');
+  }
+  return input.toUpperCase();
+}
+```
+
+### Interfaces vs Types
+- Préférer `interface` pour les objets extensibles (composants React, API).
+- Utiliser `type` pour les unions, intersections, et types utilitaires.
+
+### Génériques
+- Nommer les paramètres génériques de manière descriptive (`TData`, `TResponse`, pas `T`).
+- Utiliser des contraintes explicites (`<T extends BaseType>`).

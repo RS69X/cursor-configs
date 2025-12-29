@@ -1,0 +1,143 @@
+# Cursor Ignore - Exclusion Totale (Sécurité Critique)
+# Les fichiers listés ici sont TOTALEMENT invisibles pour l'IA
+# Ils ne sont ni indexés, ni accessibles en lecture, même sur demande explicite
+
+# ============================================
+# SECRETS ET DONNÉES SENSIBLES
+# ============================================
+.env
+.env.local
+.env.*.local
+*.env
+secrets.json
+secrets.yaml
+secrets.yml
+**/*.pem
+**/*.key
+**/*.secret
+**/secrets/**
+**/private/**
+
+# Clés cryptographiques
+*.private
+*.privkey
+id_rsa
+id_ed25519
+*.gpg
+*.pgp
+
+# Tokens et credentials
+credentials.json
+service-account.json
+*.credentials
+**/credentials/**
+
+# ============================================
+# DÉPENDANCES ET ARTEFACTS DE BUILD
+# ============================================
+node_modules/
+**/node_modules/**
+.pnp
+.pnp.js
+.yarn/
+dist/
+build/
+out/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+coverage/
+.nyc_output/
+
+# ============================================
+# FICHIERS SYSTÈME ET TEMPORAIRES
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+.temp/
+tmp/
+
+# ============================================
+# FICHIERS BINAIRES ET MÉDIAS
+# ============================================
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.svg
+*.webp
+*.pdf
+*.zip
+*.tar
+*.gz
+*.rar
+*.7z
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ============================================
+# LOGS ET DONNÉES VOLUMINEUSES
+# ============================================
+*.log
+logs/
+**/*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ============================================
+# SNAPSHOTS ET DONNÉES RÉPÉTITIVES
+# ============================================
+**/__snapshots__/**
+**/*.snap
+*.snapshot
+
+# ============================================
+# CONFIGURATIONS LOCALES SPÉCIFIQUES
+# ============================================
+.vscode/settings.json
+.idea/
+*.code-workspace
+# Note: .cursor/rules/ et .cursor/docs/ sont versionnés et doivent être visibles
+# Seuls les fichiers de cache locaux dans .cursor/ sont ignorés
+.cursor/cache/
+.cursor/*.log
+
+# ============================================
+# BASE DE DONNÉES ET FICHIERS DE DONNÉES
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+data/
+**/data/**
+*.csv
+*.xlsx
+*.xls
+
+# ============================================
+# FICHIERS GÉNÉRÉS AUTOMATIQUEMENT
+# ============================================
+*.min.js
+*.min.css
+*.bundle.js
+vendor/
+**/vendor/**

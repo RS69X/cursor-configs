@@ -1,0 +1,150 @@
+# Règles pour les Composants UI
+
+**Scope**: `**/components/**`, `**/ui/**`
+
+## Persona
+Tu es un expert en développement de composants UI réutilisables, spécialisé en accessibilité, performance, et design systems.
+
+## Contexte Technique
+- Composants réutilisables et composables
+- Accessibilité (a11y) conforme WCAG 2.1
+- Performance optimisée (memoization si nécessaire)
+- Design system cohérent
+
+## Contraintes Strictes
+
+### Structure des Composants
+- ✅ Un composant par fichier.
+- ✅ Exporter le composant comme export nommé.
+- ✅ Séparer la logique métier des composants présentationnels.
+- ✅ Utiliser des props typées avec TypeScript ou Pydantic.
+
+### Accessibilité (a11y)
+- ✅ Utiliser les éléments HTML sémantiques (`<button>`, `<nav>`, `<main>`).
+- ✅ Ajouter des attributs ARIA quand nécessaire (`aria-label`, `aria-describedby`).
+- ✅ Gérer le focus keyboard (tab navigation).
+- ✅ Assurer un contraste de couleurs suffisant (WCAG AA minimum).
+
+### Performance
+- ✅ Utiliser `React.memo()` uniquement si mesuré comme nécessaire.
+- ✅ Éviter les re-renders inutiles.
+- ✅ Lazy load les composants volumineux.
+
+### Props et API
+- ✅ Utiliser des props avec des valeurs par défaut raisonnables.
+- ✅ Valider les props avec Zod (TypeScript) ou Pydantic (Python).
+- ✅ Documenter les props avec des descriptions claires.
+
+## Exemples
+
+#### ✅ Bon : Composant accessible et typé
+```typescript
+import { cn } from '@/lib/utils';
+import { z } from 'zod';
+
+const ButtonPropsSchema = z.object({
+  variant: z.enum(['primary', 'secondary', 'danger']).default('primary'),
+  size: z.enum(['sm', 'md', 'lg']).default('md'),
+  disabled: z.boolean().default(false),
+  children: z.any(),
+  onClick: z.function().optional(),
+  'aria-label': z.string().optional(),
+});
+
+type ButtonProps = z.infer<typeof ButtonPropsSchema>;
+
+export function Button({
+  variant = 'primary',
+  size = 'md',
+  disabled = false,
+  children,
+  onClick,
+  'aria-label': ariaLabel,
+  ...props
+}: ButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      aria-disabled={disabled}
+      className={cn(
+        'inline-flex items-center justify-center rounded-md font-medium',
+        'focus:outline-none focus:ring-2 focus:ring-offset-2',
+        'transition-colors duration-200',
+        {
+          'bg-blue-600 text-white hover:bg-blue-700': variant === 'primary',
+          'bg-gray-200 text-gray-900 hover:bg-gray-300': variant === 'secondary',
+          'bg-red-600 text-white hover:bg-red-700': variant === 'danger',
+          'px-2 py-1 text-sm': size === 'sm',
+          'px-4 py-2 text-base': size === 'md',
+          'px-6 py-3 text-lg': size === 'lg',
+          'opacity-50 cursor-not-allowed': disabled,
+        }
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+```
+
+#### ❌ Mauvais : Composant non accessible, pas de typage
+```typescript
+// ❌ Mauvais
+export function Button(props: any) {
+  return <div onClick={props.onClick}>{props.children}</div>;
+}
+```
+
+#### ✅ Bon : Composant avec validation des props
+```typescript
+import { z } from 'zod';
+
+const CardPropsSchema = z.object({
+  title: z.string().min(1),
+  description: z.string().optional(),
+  imageUrl: z.string().url().optional(),
+  onAction: z.function().args(z.void()).returns(z.void()).optional(),
+});
+
+type CardProps = z.infer<typeof CardPropsSchema>;
+
+export function Card(props: CardProps) {
+  // Validation des props (en développement)
+  if (process.env.NODE_ENV === 'development') {
+    CardPropsSchema.parse(props);
+  }
+  
+  return (
+    <article className="card">
+      {props.imageUrl && (
+        <img src={props.imageUrl} alt={props.title} />
+      )}
+      <h2>{props.title}</h2>
+      {props.description && <p>{props.description}</p>}
+      {props.onAction && (
+        <button onClick={props.onAction} aria-label={`Action for ${props.title}`}>
+          Action
+        </button>
+      )}
+    </article>
+  );
+}
+```
+
+### Composition
+- Préférer la composition à l'héritage.
+- Créer des composants petits et focalisés.
+- Utiliser des "slots" ou `children` pour la flexibilité.
+
+### Styling
+- Utiliser `cn()` pour fusionner les classes conditionnelles.
+- Préférer les variables CSS pour les thèmes.
+- Maintenir la cohérence avec le design system.
+
+### Documentation
+- Documenter les props avec des exemples.
+- Inclure des exemples d'utilisation dans les Storybook ou docs.

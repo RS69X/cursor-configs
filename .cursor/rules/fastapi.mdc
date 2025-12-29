@@ -1,0 +1,156 @@
+# Règles FastAPI avec Pydantic v2
+
+**Scope**: `**/api/**`, `**/routes/**`, `**/endpoints/**`
+
+## Persona
+Tu es un expert FastAPI, spécialisé en APIs RESTful modernes, validation de données, et architecture asynchrone.
+
+## Contexte Technique
+- FastAPI avec Python 3.10+
+- Pydantic v2 pour la validation et la sérialisation
+- Pattern RORO (Receive Object, Return Object)
+- Gestion d'erreurs avec des gestionnaires personnalisés
+- Typage strict avec type hints
+
+## Contraintes Strictes
+
+### Pydantic v2
+- ✅ Utiliser `model_validate()` au lieu de `parse_obj()` (déprécié).
+- ✅ Utiliser `model_dump()` au lieu de `dict()`.
+- ✅ Utiliser `Field()` pour les validations et descriptions.
+- ✅ Utiliser `@field_validator` pour les validations personnalisées.
+
+### Pattern RORO
+- Les endpoints doivent recevoir et retourner des modèles Pydantic.
+- Cela facilite l'évolution de l'API sans casser les clients.
+
+### Gestion d'Erreurs
+- ❌ **JAMAIS** utiliser `except Exception: pass`.
+- ✅ Utiliser des gestionnaires d'exceptions personnalisés FastAPI.
+- ✅ Logger explicitement les erreurs avec stack trace.
+- ✅ Retourner des réponses d'erreur structurées.
+
+### Asyncio
+- Utiliser `async`/`await` pour tous les endpoints.
+- Utiliser `asyncio.gather()` pour les opérations parallèles.
+- Toujours gérer les timeouts.
+
+## Exemples
+
+#### ✅ Bon : Endpoint avec Pydantic v2 et validation
+```python
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+class UserCreate(BaseModel):
+    email: str = Field(..., description="User email", examples=["user@example.com"])
+    age: int = Field(..., ge=0, le=150, description="User age")
+    name: str = Field(..., min_length=1, max_length=100)
+    
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        if '@' not in v:
+            raise ValueError('Invalid email format')
+        return v.lower()
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    age: int
+    name: str
+
+@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def create_user(user_data: UserCreate) -> UserResponse:
+    try:
+        # Validation automatique via Pydantic
+        user = await db.create_user(user_data.model_dump())
+        return UserResponse.model_validate(user)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+```
+
+#### ❌ Mauvais : Pas de validation, gestion d'erreur silencieuse
+```python
+@router.post("/")
+async def create_user(data: dict):
+    try:
+        # Pas de validation, pas de type hints
+        user = await db.create_user(data)
+        return user
+    except:
+        pass  # ❌ Erreur ignorée
+```
+
+#### ✅ Bon : Gestionnaire d'exceptions personnalisé
+```python
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+import logging
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI()
+
+class UserNotFoundError(Exception):
+    pass
+
+@app.exception_handler(UserNotFoundError)
+async def user_not_found_handler(request: Request, exc: UserNotFoundError):
+    logger.warning(f"User not found: {request.url}")
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": "User not found"}
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error(f"Validation error: {exc.errors()}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors()}
+    )
+```
+
+#### ✅ Bon : Opérations parallèles avec asyncio.gather
+```python
+import asyncio
+from typing import List
+
+@router.get("/users/{user_id}/stats")
+async def get_user_stats(user_id: str) -> dict:
+    # Opérations parallèles
+    user, posts, comments = await asyncio.gather(
+        db.get_user(user_id),
+        db.get_user_posts(user_id),
+        db.get_user_comments(user_id),
+    )
+    
+    return {
+        "user": user,
+        "posts_count": len(posts),
+        "comments_count": len(comments),
+    }
+```
+
+### Structure des Routes
+- Un fichier par ressource (ex: `users.py`, `posts.py`).
+- Utiliser des routers avec préfixes et tags.
+- Regrouper les routes liées dans le même router.
+
+### Documentation
+- Utiliser les descriptions dans les modèles Pydantic (`Field(..., description="...")`).
+- Ajouter des exemples avec `Field(..., examples=["..."])`.
+- Utiliser les tags pour organiser la documentation Swagger.
+
+### Sécurité
+- Utiliser `Depends()` pour l'authentification et l'autorisation.
+- Ne jamais exposer de secrets dans les réponses.
+- Valider tous les inputs utilisateur.

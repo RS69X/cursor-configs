@@ -1,0 +1,103 @@
+# PROJECT.md - Template de Documentation pour l'IA
+
+Ce fichier sert de "mémoire à long terme" ou de "carte mentale" du projet pour l'agent Cursor. Il doit être concis et dense en informations.
+
+## Vue d'Ensemble Architecturale
+
+**Stack Technique** :
+- Frontend: [Next.js 15 / React 19 / Vue 3 / etc.]
+- Backend: [FastAPI / Express / NestJS / etc.]
+- Base de données: [PostgreSQL / MongoDB / etc.]
+- ORM/ODM: [Prisma / Mongoose / etc.]
+
+**Architecture** :
+```
+[Description textuelle ou diagramme Mermaid des flux de données]
+
+Exemple:
+Le frontend Next.js appelle l'API via tRPC, qui interroge PostgreSQL via Prisma.
+Les Server Components récupèrent les données directement depuis la base.
+Les mutations passent par des Server Actions qui valident avec Zod.
+```
+
+## Glossaire Métier
+
+Définir les termes spécifiques au domaine :
+
+- **User** : Un utilisateur authentifié du système. Différent d'un "Account" qui peut être un compte organisationnel.
+- **Order** : Une commande en cours de traitement. Différent d'un "Purchase" qui est une transaction complétée.
+- [Ajouter d'autres termes spécifiques...]
+
+## État du Projet
+
+### Fonctionnalités Implémentées
+- [ ] Authentification JWT
+- [ ] Gestion des utilisateurs
+- [ ] Système de paiement
+- [Ajouter d'autres fonctionnalités...]
+
+### Fonctionnalités Planifiées
+- [ ] Système de notifications
+- [ ] Export de données
+- [Ajouter d'autres fonctionnalités...]
+
+## Points d'Attention
+
+### Modules Critiques
+- **Module de Paiement** : Code critique, toute modification nécessite une revue approfondie.
+- **Authentification** : Gestion des tokens JWT, ne jamais exposer les secrets.
+- [Ajouter d'autres points d'attention...]
+
+### Décisions Architecturales
+- Utilisation de Server Components par défaut pour réduire le JavaScript client.
+- Validation Zod pour toutes les données utilisateur.
+- Pattern RORO pour la scalabilité des APIs.
+- [Ajouter d'autres décisions...]
+
+## Conventions de Nommage
+
+- **Composants** : PascalCase (`UserCard.tsx`)
+- **Fonctions utilitaires** : camelCase (`formatDate()`)
+- **Constantes** : UPPER_SNAKE_CASE (`MAX_RETRIES`)
+- **Types/Interfaces** : PascalCase (`UserData`)
+
+## Structure des Dossiers
+
+```
+project-root/
+├── app/              # Next.js App Router (si applicable)
+├── components/       # Composants réutilisables
+├── lib/              # Utilitaires et helpers
+├── types/            # Types TypeScript globaux
+├── api/              # Routes API (si applicable)
+└── tests/            # Tests
+```
+
+## Workflow de Développement
+
+1. Créer une branche depuis `main`
+2. Implémenter avec tests
+3. Vérifier les règles Cursor (`.cursorrules`)
+4. Créer une PR avec description détaillée
+5. Code review obligatoire pour les modules critiques
+
+## Commandes Utiles
+
+```bash
+# Développement
+npm run dev          # Démarrer le serveur de développement
+npm run build        # Build de production
+npm run test         # Lancer les tests
+
+# Linting et Formatage
+npm run lint         # Vérifier le code
+npm run format       # Formater le code
+```
+
+## Notes pour l'IA
+
+Lors de l'utilisation de ce projet :
+- Toujours vérifier `.cursorrules` avant de générer du code
+- Respecter les conventions de nommage définies ci-dessus
+- Utiliser les patterns établis (Server Components, Zod, etc.)
+- Ne jamais modifier les modules critiques sans validation explicite

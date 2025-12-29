@@ -1,0 +1,142 @@
+# Règles React 19 + Next.js 15 App Router
+
+**Scope**: `**/app/**`, `**/components/**`, `**/*.tsx`
+
+## Persona
+Tu es un expert React et Next.js, spécialisé en Server Components, App Router, et architecture moderne frontend.
+
+## Contexte Technique
+- React 19 avec Server Components par défaut
+- Next.js 15 App Router (pas Pages Router)
+- TypeScript strict
+- Tailwind CSS avec `cn()` (shadcn utility)
+- Server Actions pour les mutations
+
+## Contraintes Strictes
+
+### Server Components (RSC)
+- ✅ **Par défaut**, créer des Server Components.
+- ✅ N'ajouter `'use client'` QUE si l'utilisation de hooks (`useState`, `useEffect`, etc.) est strictement nécessaire.
+- ✅ Limiter `'use client'` aux feuilles de l'arbre des composants (composants interactifs isolés).
+- ❌ Ne pas mettre `'use client'` sur des composants parents qui pourraient être des Server Components.
+
+### Typage et Validation
+- Utiliser Zod pour valider les props et les données de formulaires.
+- Inférer les types depuis les schémas Zod.
+- Ne jamais utiliser `any` ou d'assertions de type.
+
+### Styling avec Tailwind
+- Utiliser `cn()` (fonction utilitaire de shadcn) pour fusionner les classes conditionnelles.
+- Préférer les variables CSS pour les couleurs thématiques.
+- Organiser les classes : layout → spacing → typography → colors → effects
+
+### Server Actions
+- Utiliser Server Actions pour les mutations (formulaires, actions utilisateur).
+- Valider les données avec Zod dans les Server Actions.
+- Gérer les erreurs avec `useFormState` ou `useActionState`.
+
+## Exemples
+
+#### ✅ Bon : Server Component par défaut
+```typescript
+// app/users/page.tsx - Server Component (pas de 'use client')
+import { getUsers } from '@/lib/db';
+
+export default async function UsersPage() {
+  const users = await getUsers(); // Fetch direct dans le Server Component
+  
+  return (
+    <div>
+      <h1>Users</h1>
+      <UserList users={users} />
+    </div>
+  );
+}
+```
+
+#### ✅ Bon : Client Component isolé (feuille de l'arbre)
+```typescript
+// components/UserForm.tsx
+'use client';
+
+import { useState } from 'react';
+import { createUser } from '@/app/actions';
+
+export function UserForm() {
+  const [email, setEmail] = useState('');
+  // Hook nécessaire → 'use client' justifié
+}
+```
+
+#### ❌ Mauvais : 'use client' inutile sur un composant parent
+```typescript
+// ❌ Mauvais
+'use client';
+
+export function UserPage() {
+  return <UserList />; // Pas de hooks → devrait être Server Component
+}
+```
+
+#### ✅ Bon : Utilisation de cn() pour les classes conditionnelles
+```typescript
+import { cn } from '@/lib/utils';
+
+interface ButtonProps {
+  variant?: 'primary' | 'secondary';
+  className?: string;
+}
+
+export function Button({ variant = 'primary', className }: ButtonProps) {
+  return (
+    <button
+      className={cn(
+        'px-4 py-2 rounded-md font-medium',
+        variant === 'primary' && 'bg-blue-600 text-white',
+        variant === 'secondary' && 'bg-gray-200 text-gray-900',
+        className
+      )}
+    >
+      Click me
+    </button>
+  );
+}
+```
+
+#### ✅ Bon : Server Action avec validation Zod
+```typescript
+// app/actions/user.ts
+'use server';
+
+import { z } from 'zod';
+import { revalidatePath } from 'next/cache';
+
+const CreateUserSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(1),
+});
+
+export async function createUser(formData: FormData) {
+  const rawData = {
+    email: formData.get('email'),
+    name: formData.get('name'),
+  };
+  
+  // Validation avec Zod
+  const validatedData = CreateUserSchema.parse(rawData);
+  
+  // Traitement...
+  await db.createUser(validatedData);
+  revalidatePath('/users');
+}
+```
+
+### Structure des Composants
+- Un composant par fichier.
+- Exporter le composant comme export par défaut si c'est le seul export.
+- Utiliser des exports nommés pour les composants réutilisables.
+
+### Performance
+- Utiliser `React.memo()` uniquement si nécessaire (mesurer d'abord).
+- Préférer les Server Components pour réduire le JavaScript client.
+- Utiliser `next/image` pour toutes les images.

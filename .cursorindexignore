@@ -1,0 +1,49 @@
+# Cursor Index Ignore - Exclusion de l'Indexation (Optimisation)
+# Les fichiers listés ici ne sont PAS indexés pour la recherche sémantique
+# MAIS restent accessibles si référencés explicitement via @Fichier
+
+# ============================================
+# FICHIERS DE CONFIGURATION LONGUES
+# ============================================
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+Cargo.lock
+poetry.lock
+Pipfile.lock
+
+# ============================================
+# CODE LEGACY OU ARCHIVÉ
+# ============================================
+legacy/
+archived/
+deprecated/
+**/legacy/**
+**/archived/**
+**/deprecated/**
+
+# ============================================
+# FICHIERS DE MIGRATION ET SCRIPTS
+# ============================================
+migrations/
+**/migrations/**
+*.migration.*
+*.migration.js
+*.migration.ts
+
+# ============================================
+# FICHIERS DE TEST VOLUMINEUX
+# ============================================
+**/__fixtures__/**
+**/fixtures/**
+test-data/
+**/test-data/**
+
+# ============================================
+# FICHIERS GÉNÉRÉS PAR DES OUTILS
+# ============================================
+*.generated.*
+**/generated/**
+**/auto-generated/**
+# Note: Ces fichiers peuvent être référencés explicitement
+# mais ne doivent pas polluer les réponses générales de l'IA
